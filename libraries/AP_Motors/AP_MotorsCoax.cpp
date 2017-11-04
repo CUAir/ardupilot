@@ -35,7 +35,7 @@ void AP_MotorsCoax::init(motor_frame_class frame_class, motor_frame_type frame_t
     _servo3 = SRV_Channels::get_channel_for(SRV_Channel::k_motor3, CH_3);
     _servo4 = SRV_Channels::get_channel_for(SRV_Channel::k_motor4, CH_4);
     if (!_servo1 || !_servo2 || !_servo3 || !_servo4) {
-        GCS_MAVLINK::send_statustext_all(MAV_SEVERITY_ERROR, "MotorsCoax: unable to setup output channels");
+        gcs().send_text(MAV_SEVERITY_ERROR, "MotorsCoax: unable to setup output channels");
         // don't set initialised_ok
         return;
     }
@@ -72,55 +72,37 @@ void AP_MotorsCoax::set_update_rate( uint16_t speed_hz )
     rc_set_freq(mask, _speed_hz);
 }
 
-// enable - starts allowing signals to be sent to motors
-void AP_MotorsCoax::enable()
-{
-    // enable output channels
-    rc_enable_ch(AP_MOTORS_MOT_1);
-    rc_enable_ch(AP_MOTORS_MOT_2);
-    rc_enable_ch(AP_MOTORS_MOT_3);
-    rc_enable_ch(AP_MOTORS_MOT_4);
-    rc_enable_ch(AP_MOTORS_MOT_5);
-    rc_enable_ch(AP_MOTORS_MOT_6);
-}
-
 void AP_MotorsCoax::output_to_motors()
 {
     switch (_spool_mode) {
         case SHUT_DOWN:
             // sends minimum values out to the motors
-            hal.rcout->cork();
             rc_write(AP_MOTORS_MOT_1, calc_pwm_output_1to1(_roll_radio_passthrough, _servo1));
             rc_write(AP_MOTORS_MOT_2, calc_pwm_output_1to1(_pitch_radio_passthrough, _servo2));
             rc_write(AP_MOTORS_MOT_3, calc_pwm_output_1to1(-_roll_radio_passthrough, _servo3));
             rc_write(AP_MOTORS_MOT_4, calc_pwm_output_1to1(-_pitch_radio_passthrough, _servo4));
             rc_write(AP_MOTORS_MOT_5, get_pwm_output_min());
             rc_write(AP_MOTORS_MOT_6, get_pwm_output_min());
-            hal.rcout->push();
             break;
         case SPIN_WHEN_ARMED:
             // sends output to motors when armed but not flying
-            hal.rcout->cork();
             rc_write(AP_MOTORS_MOT_1, calc_pwm_output_1to1(_spin_up_ratio * _actuator_out[0], _servo1));
             rc_write(AP_MOTORS_MOT_2, calc_pwm_output_1to1(_spin_up_ratio * _actuator_out[1], _servo2));
             rc_write(AP_MOTORS_MOT_3, calc_pwm_output_1to1(_spin_up_ratio * _actuator_out[2], _servo3));
             rc_write(AP_MOTORS_MOT_4, calc_pwm_output_1to1(_spin_up_ratio * _actuator_out[3], _servo4));
             rc_write(AP_MOTORS_MOT_5, calc_spin_up_to_pwm());
             rc_write(AP_MOTORS_MOT_6, calc_spin_up_to_pwm());
-            hal.rcout->push();
             break;
         case SPOOL_UP:
         case THROTTLE_UNLIMITED:
         case SPOOL_DOWN:
             // set motor output based on thrust requests
-            hal.rcout->cork();
             rc_write(AP_MOTORS_MOT_1, calc_pwm_output_1to1(_actuator_out[0], _servo1));
             rc_write(AP_MOTORS_MOT_2, calc_pwm_output_1to1(_actuator_out[1], _servo2));
             rc_write(AP_MOTORS_MOT_3, calc_pwm_output_1to1(_actuator_out[2], _servo3));
             rc_write(AP_MOTORS_MOT_4, calc_pwm_output_1to1(_actuator_out[3], _servo4));
             rc_write(AP_MOTORS_MOT_5, calc_thrust_to_pwm(_thrust_yt_ccw));
             rc_write(AP_MOTORS_MOT_6, calc_thrust_to_pwm(_thrust_yt_cw));
-            hal.rcout->push();
             break;
     }
 }

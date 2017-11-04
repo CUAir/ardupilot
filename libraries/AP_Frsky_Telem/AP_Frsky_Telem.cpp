@@ -46,7 +46,7 @@ void AP_Frsky_Telem::init(const AP_SerialManager &serial_manager, const char *fi
     } else if ((_port = serial_manager.find_serial(AP_SerialManager::SerialProtocol_FrSky_SPort_Passthrough, 0))) {
         _protocol = AP_SerialManager::SerialProtocol_FrSky_SPort_Passthrough; // FrSky SPort and SPort Passthrough (OpenTX) protocols (X-receivers)
         // make frsky_telemetry available to GCS_MAVLINK (used to queue statustext messages from GCS_MAVLINK)
-        GCS_MAVLINK::register_frsky_telemetry_callback(this);
+        gcs().register_frsky_telemetry_callback(this);
         // add firmware and frame info to message queue
         queue_message(MAV_SEVERITY_INFO, firmware_str);
         // save main parameters locally
@@ -123,9 +123,16 @@ void AP_Frsky_Telem::send_SPort_Passthrough(void)
                 return;
             }
             if ((now - _passthrough.batt_timer) >= 1000) {
-                send_uint32(DIY_FIRST_ID+3, calc_batt());
+                send_uint32(DIY_FIRST_ID+3, calc_batt(0));
                 _passthrough.batt_timer = AP_HAL::millis();
                 return;
+            }
+            if (_battery.num_instances() > 1) {
+                if ((now - _passthrough.batt_timer2) >= 1000) {
+                    send_uint32(DIY_FIRST_ID+8, calc_batt(1));
+                    _passthrough.batt_timer2 = AP_HAL::millis();
+                    return;
+                }
             }
             if ((now - _passthrough.gps_status_timer) >= 1000) {
                 send_uint32(DIY_FIRST_ID+2, calc_gps_status());
@@ -421,34 +428,30 @@ bool AP_Frsky_Telem::get_next_msg_chunk(void)
         return false;
     }
 
-    if (_msg_chunk.repeats == 0) {
-        _msg_chunk.chunk = 0;
-        uint8_t character = _statustext_queue[0]->text[_msg_chunk.char_index++];
-        if (character) {
-            _msg_chunk.chunk |= character<<24;
+    if (_msg_chunk.repeats == 0) { // if it's the first time get_next_msg_chunk is called for a given chunk
+        uint8_t character = 0;
+        _msg_chunk.chunk = 0; // clear the 4 bytes of the chunk buffer
+
+        for (int i = 3; i > -1 && _msg_chunk.char_index < sizeof(_statustext_queue[0]->text); i--) {
             character = _statustext_queue[0]->text[_msg_chunk.char_index++];
-            if (character) {
-                _msg_chunk.chunk |= character<<16;
-                character = _statustext_queue[0]->text[_msg_chunk.char_index++];
-                if (character) {
-                    _msg_chunk.chunk |= character<<8;
-                    character = _statustext_queue[0]->text[_msg_chunk.char_index++];
-                    if (character) {
-                        _msg_chunk.chunk |= character;
-                    }
-                }
+
+            if (!character) {
+                break;
             }
+
+            _msg_chunk.chunk |= character << i * 8;
         }
-        if (!character) { // we've reached the end of the message (string terminated by '\0')
-            _msg_chunk.char_index = 0;
+
+        if (!character || (_msg_chunk.char_index == sizeof(_statustext_queue[0]->text))) { // we've reached the end of the message (string terminated by '\0' or last character of the string has been processed)
+            _msg_chunk.char_index = 0; // reset index to get ready to process the next message
             // add severity which is sent as the MSB of the last three bytes of the last chunk (bits 24, 16, and 8) since a character is on 7 bits
             _msg_chunk.chunk |= (_statustext_queue[0]->severity & 0x4)<<21;
             _msg_chunk.chunk |= (_statustext_queue[0]->severity & 0x2)<<14;
             _msg_chunk.chunk |= (_statustext_queue[0]->severity & 0x1)<<7;
         }
     }
-    _msg_chunk.repeats++;
-    if (_msg_chunk.repeats > 2) { // repeat each message chunk 3 times to ensure transmission
+
+    if (_msg_chunk.repeats++ > 2) { // repeat each message chunk 3 times to ensure transmission
         _msg_chunk.repeats = 0;
         if (_msg_chunk.char_index == 0) { // if we're ready for the next message
             _statustext_queue.remove(0);
@@ -571,13 +574,13 @@ uint32_t AP_Frsky_Telem::calc_param(void)
     uint32_t param = 0;
 
     // cycle through paramIDs
-    if (_paramID >= 4) {
+    if (_paramID >= 5) {
         _paramID = 0;
     }
     _paramID++;
     switch(_paramID) {
     case 1:
-        param = _params.mav_type;                                    // frame type (see MAV_TYPE in Mavlink definition file common.h)
+        param = _params.mav_type; // frame type (see MAV_TYPE in Mavlink definition file common.h)
         break;
     case 2:
         if (_params.fs_batt_voltage != nullptr) {
@@ -586,15 +589,18 @@ uint32_t AP_Frsky_Telem::calc_param(void)
         break;
     case 3:
         if (_params.fs_batt_mah != nullptr) {
-            param = (uint32_t)roundf((*_params.fs_batt_mah));              // battery failsafe capacity in mAh
+            param = (uint32_t)roundf((*_params.fs_batt_mah)); // battery failsafe capacity in mAh
         }
         break;
     case 4:
-        param = (uint32_t)roundf(_battery.pack_capacity_mah());      // battery pack capacity in mAh as configured by user
+        param = (uint32_t)roundf(_battery.pack_capacity_mah(0)); // battery pack capacity in mAh
+        break;
+    case 5:
+        param = (uint32_t)roundf(_battery.pack_capacity_mah(1)); // battery pack capacity in mAh
         break;
     }
     //Reserve first 8 bits for param ID, use other 24 bits to store parameter value
-    param = (_paramID << 24) | (param & 0xFFFFFF);
+    param = (_paramID << PARAM_ID_OFFSET) | (param & PARAM_VALUE_LIMIT);
     
     return param;
 }
@@ -637,12 +643,12 @@ uint32_t AP_Frsky_Telem::calc_gps_status(void)
 
     // number of GPS satellites visible (limit to 15 (0xF) since the value is stored on 4 bits)
     gps_status = (_ahrs.get_gps().num_sats() < GPS_SATS_LIMIT) ? _ahrs.get_gps().num_sats() : GPS_SATS_LIMIT;
-    // GPS receiver status (limit to 3 (0x3) since the value is stored on 2 bits: NO_GPS = 0, NO_FIX = 1, GPS_OK_FIX_2D = 2, GPS_OK_FIX_3D or GPS_OK_FIX_3D_DGPS or GPS_OK_FIX_3D_RTK = 3)
+    // GPS receiver status (limit to 0-3 (0x3) since the value is stored on 2 bits: NO_GPS = 0, NO_FIX = 1, GPS_OK_FIX_2D = 2, GPS_OK_FIX_3D or GPS_OK_FIX_3D_DGPS or GPS_OK_FIX_3D_RTK_FLOAT or GPS_OK_FIX_3D_RTK_FIXED = 3)
     gps_status |= ((_ahrs.get_gps().status() < GPS_STATUS_LIMIT) ? _ahrs.get_gps().status() : GPS_STATUS_LIMIT)<<GPS_STATUS_OFFSET;
     // GPS horizontal dilution of precision in dm
     gps_status |= prep_number(roundf(_ahrs.get_gps().get_hdop() * 0.1f),2,1)<<GPS_HDOP_OFFSET; 
-    // GPS vertical dilution of precision in dm
-    gps_status |= prep_number(roundf(_ahrs.get_gps().get_vdop() * 0.1f),2,1)<<GPS_VDOP_OFFSET; 
+    // GPS receiver advanced status (0: no advanced fix, 1: GPS_OK_FIX_3D_DGPS, 2: GPS_OK_FIX_3D_RTK_FLOAT, 3: GPS_OK_FIX_3D_RTK_FIXED)
+    gps_status |= ((_ahrs.get_gps().status() > GPS_STATUS_LIMIT) ? _ahrs.get_gps().status()-GPS_STATUS_LIMIT : 0)<<GPS_ADVSTATUS_OFFSET;
     // Altitude MSL in dm
     const Location &loc = _ahrs.get_gps().location();
     gps_status |= prep_number(roundf(loc.alt * 0.1f),2,2)<<GPS_ALTMSL_OFFSET; 
@@ -653,16 +659,16 @@ uint32_t AP_Frsky_Telem::calc_gps_status(void)
  * prepare battery data
  * for FrSky SPort Passthrough (OpenTX) protocol (X-receivers)
  */
-uint32_t AP_Frsky_Telem::calc_batt(void)
+uint32_t AP_Frsky_Telem::calc_batt(uint8_t instance)
 {
     uint32_t batt;
     
     // battery voltage in decivolts, can have up to a 12S battery (4.25Vx12S = 51.0V)
-    batt = (((uint16_t)roundf(_battery.voltage() * 10.0f)) & BATT_VOLTAGE_LIMIT);
+    batt = (((uint16_t)roundf(_battery.voltage(instance) * 10.0f)) & BATT_VOLTAGE_LIMIT);
     // battery current draw in deciamps
-    batt |= prep_number(roundf(_battery.current_amps() * 10.0f), 2, 1)<<BATT_CURRENT_OFFSET; 
+    batt |= prep_number(roundf(_battery.current_amps(instance) * 10.0f), 2, 1)<<BATT_CURRENT_OFFSET; 
     // battery current drawn since power on in mAh (limit to 32767 (0x7FFF) since value is stored on 15 bits)
-    batt |= ((_battery.current_total_mah() < BATT_TOTALMAH_LIMIT) ? ((uint16_t)roundf(_battery.current_total_mah()) & BATT_TOTALMAH_LIMIT) : BATT_TOTALMAH_LIMIT)<<BATT_TOTALMAH_OFFSET;
+    batt |= ((_battery.current_total_mah(instance) < BATT_TOTALMAH_LIMIT) ? ((uint16_t)roundf(_battery.current_total_mah(instance)) & BATT_TOTALMAH_LIMIT) : BATT_TOTALMAH_LIMIT)<<BATT_TOTALMAH_OFFSET;
     return batt;
 }
 
@@ -757,7 +763,7 @@ uint32_t AP_Frsky_Telem::calc_attiandrng(void)
     // pitch from [-9000;9000] centidegrees to unsigned .2 degree increments [0;900] (just in case, limit to 1023 (0x3FF) since the value is stored on 10 bits)
     attiandrng |= ((uint16_t)roundf((_ahrs.pitch_sensor + 9000) * 0.05f) & ATTIANDRNG_PITCH_LIMIT)<<ATTIANDRNG_PITCH_OFFSET;
     // rangefinder measurement in cm
-    attiandrng |= prep_number(_rng.distance_cm(), 3, 1)<<ATTIANDRNG_RNGFND_OFFSET;
+    attiandrng |= prep_number(_rng.distance_cm_orient(ROTATION_PITCH_270), 3, 1)<<ATTIANDRNG_RNGFND_OFFSET;
     return attiandrng;
 }
 

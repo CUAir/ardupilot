@@ -7,13 +7,6 @@
 // loiter_init - initialise loiter controller
 bool Copter::loiter_init(bool ignore_checks)
 {
-#if FRAME_CONFIG == HELI_FRAME
-    // do not allow helis to enter Loiter if the Rotor Runup is not complete
-    if (!ignore_checks && !motors->rotor_runup_complete()){
-        return false;
-    }
-#endif
-
     if (position_ok() || ignore_checks) {
 
         // set target to current position
@@ -36,7 +29,7 @@ bool Copter::loiter_init(bool ignore_checks)
 }
 
 #if PRECISION_LANDING == ENABLED
-bool Copter::do_precision_loiter() const
+bool Copter::do_precision_loiter()
 {
     if (!_precision_loiter_enabled) {
         return false;

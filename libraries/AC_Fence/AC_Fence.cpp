@@ -31,7 +31,7 @@ const AP_Param::GroupInfo AC_Fence::var_info[] = {
     // @Param: ALT_MAX
     // @DisplayName: Fence Maximum Altitude
     // @Description: Maximum altitude allowed before geofence triggers
-    // @Units: Meters
+    // @Units: m
     // @Range: 10 1000
     // @Increment: 1
     // @User: Standard
@@ -40,7 +40,7 @@ const AP_Param::GroupInfo AC_Fence::var_info[] = {
     // @Param: RADIUS
     // @DisplayName: Circular Fence Radius
     // @Description: Circle fence radius which when breached will cause an RTL
-    // @Units: Meters
+    // @Units: m
     // @Range: 30 10000
     // @User: Standard
     AP_GROUPINFO("RADIUS",      4,  AC_Fence,   _circle_radius, AC_FENCE_CIRCLE_RADIUS_DEFAULT),
@@ -48,7 +48,7 @@ const AP_Param::GroupInfo AC_Fence::var_info[] = {
     // @Param: MARGIN
     // @DisplayName: Fence Margin
     // @Description: Distance that autopilot's should maintain from the fence to avoid a breach
-    // @Units: Meters
+    // @Units: m
     // @Range: 1 10
     // @User: Standard
     AP_GROUPINFO("MARGIN",      5,  AC_Fence,   _margin, AC_FENCE_MARGIN_DEFAULT),
@@ -59,6 +59,15 @@ const AP_Param::GroupInfo AC_Fence::var_info[] = {
     // @Range: 1 20
     // @User: Standard
     AP_GROUPINFO("TOTAL",       6,  AC_Fence,   _total, 0),
+
+    // @Param: ALT_MIN
+    // @DisplayName: Fence Minimum Altitude
+    // @Description: Minimum altitude allowed before geofence triggers
+    // @Units: m
+    // @Range: -100 100
+    // @Increment: 1
+    // @User: Standard
+    AP_GROUPINFO_FRAME("ALT_MIN",     7,  AC_Fence,   _alt_min,       AC_FENCE_ALT_MIN_DEFAULT, AP_PARAM_FRAME_SUB),
 
     AP_GROUPEND
 };
@@ -88,6 +97,14 @@ AC_Fence::AC_Fence(const AP_AHRS& ahrs, const AP_InertialNav& inav) :
     }
 }
 
+void AC_Fence::enable(bool value)
+{
+    _enabled = value;
+    if (!value) {
+        clear_breach(AC_FENCE_TYPE_ALT_MAX | AC_FENCE_TYPE_CIRCLE | AC_FENCE_TYPE_POLYGON);
+    }
+}
+
 /// get_enabled_fences - returns bitmask of enabled fences
 uint8_t AC_Fence::get_enabled_fences() const
 {
@@ -99,8 +116,10 @@ uint8_t AC_Fence::get_enabled_fences() const
 }
 
 /// pre_arm_check - returns true if all pre-takeoff checks have completed successfully
-bool AC_Fence::pre_arm_check() const
+bool AC_Fence::pre_arm_check(const char* &fail_msg) const
 {
+    fail_msg = nullptr;
+
     // if not enabled or not fence set-up always return true
     if (!_enabled || _enabled_fences == AC_FENCE_TYPE_NONE) {
         return true;
@@ -108,11 +127,13 @@ bool AC_Fence::pre_arm_check() const
 
     // check no limits are currently breached
     if (_breached_fences != AC_FENCE_TYPE_NONE) {
+        fail_msg =  "vehicle outside fence";
         return false;
     }
 
     // if we have horizontal limits enabled, check inertial nav position is ok
-    if ((_enabled_fences & AC_FENCE_TYPE_CIRCLE)!=0 && !_inav.get_filter_status().flags.horiz_pos_abs && !_inav.get_filter_status().flags.pred_horiz_pos_abs) {
+    if ((_enabled_fences & (AC_FENCE_TYPE_CIRCLE | AC_FENCE_TYPE_POLYGON))>0 && !_inav.get_filter_status().flags.horiz_pos_abs && !_inav.get_filter_status().flags.pred_horiz_pos_abs) {
+        fail_msg = "fence requires position";
         return false;
     }
 
@@ -342,7 +363,7 @@ bool AC_Fence::boundary_breached(const Vector2f& location, uint16_t num_points, 
 }
 
 /// handler for polygon fence messages with GCS
-void AC_Fence::handle_msg(mavlink_channel_t chan, mavlink_message_t* msg)
+void AC_Fence::handle_msg(GCS_MAVLINK &link, mavlink_message_t* msg)
 {
     // exit immediately if null message
     if (msg == nullptr) {
@@ -355,13 +376,13 @@ void AC_Fence::handle_msg(mavlink_channel_t chan, mavlink_message_t* msg)
             mavlink_fence_point_t packet;
             mavlink_msg_fence_point_decode(msg, &packet);
             if (!check_latlng(packet.lat,packet.lng)) {
-                GCS_MAVLINK::send_statustext_chan(MAV_SEVERITY_WARNING, chan, "Invalid fence point, lat or lng too large");
+                link.send_text(MAV_SEVERITY_WARNING, "Invalid fence point, lat or lng too large");
             } else {
                 Vector2l point;
                 point.x = packet.lat*1.0e7f;
                 point.y = packet.lng*1.0e7f;
                 if (!_poly_loader.save_point_to_eeprom(packet.idx, point)) {
-                    GCS_MAVLINK::send_statustext_chan(MAV_SEVERITY_WARNING, chan, "Failed to save polygon point, too many points?");
+                    link.send_text(MAV_SEVERITY_WARNING, "Failed to save polygon point, too many points?");
                 } else {
                     // trigger reload of points
                     _boundary_loaded = false;
@@ -377,9 +398,9 @@ void AC_Fence::handle_msg(mavlink_channel_t chan, mavlink_message_t* msg)
             // attempt to retrieve from eeprom
             Vector2l point;
             if (_poly_loader.load_point_from_eeprom(packet.idx, point)) {
-                mavlink_msg_fence_point_send_buf(msg, chan, msg->sysid, msg->compid, packet.idx, _total, point.x*1.0e-7f, point.y*1.0e-7f);
+                mavlink_msg_fence_point_send_buf(msg, link.get_chan(), msg->sysid, msg->compid, packet.idx, _total, point.x*1.0e-7f, point.y*1.0e-7f);
             } else {
-                GCS_MAVLINK::send_statustext_chan(MAV_SEVERITY_WARNING, chan, "Bad fence point");
+                link.send_text(MAV_SEVERITY_WARNING, "Bad fence point");
             }
             break;
         }

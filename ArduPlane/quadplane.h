@@ -28,7 +28,6 @@ public:
     void control_auto(const Location &loc);
     bool init_mode(void);
     bool setup(void);
-    void setup_defaults(void);
 
     void vtol_position_controller(void);
     void setup_target_position(void);
@@ -50,6 +49,16 @@ public:
     bool in_assisted_flight(void) const {
         return available() && assisted_flight;
     }
+
+    /*
+      return true if we are in a transition to fwd flight from hover
+    */
+    bool in_transition(void) const;
+
+    /*
+      return true if we are a tailsitter transitioning to VTOL flight
+    */
+    bool in_tailsitter_vtol_transition(void) const;
     
     bool handle_do_vtol_transition(enum MAV_VTOL_STATE state);
 
@@ -57,8 +66,8 @@ public:
     bool do_vtol_land(const AP_Mission::Mission_Command& cmd);
     bool verify_vtol_takeoff(const AP_Mission::Mission_Command &cmd);
     bool verify_vtol_land(void);
-    bool in_vtol_auto(void);
-    bool in_vtol_mode(void);
+    bool in_vtol_auto(void) const;
+    bool in_vtol_mode(void) const;
 
     // vtol help for is_flying()
     bool is_flying(void);
@@ -74,6 +83,27 @@ public:
 
     // see if we are flying from vtol point of view
     bool is_flying_vtol(void);
+
+    // return true when tailsitter frame configured
+    bool is_tailsitter(void) const;
+
+    // return true when flying a tailsitter in VTOL
+    bool tailsitter_active(void);
+    
+    // create outputs for tailsitters
+    void tailsitter_output(void);
+
+    // handle different tailsitter input types
+    void tailsitter_check_input(void);
+    
+    // check if we have completed transition to fixed wing
+    bool tailsitter_transition_fw_complete(void);
+
+    // check if we have completed transition to vtol
+    bool tailsitter_transition_vtol_complete(void) const;
+    
+    // user initiated takeoff for guided mode
+    bool do_user_takeoff(float takeoff_altitude);
     
     struct PACKED log_QControl_Tuning {
         LOG_PACKET_HEADER;
@@ -82,13 +112,13 @@ public:
         float    throttle_out;
         float    desired_alt;
         float    inav_alt;
-        int32_t  baro_alt;
         int16_t  desired_climb_rate;
         int16_t  climb_rate;
         float    dvx;
         float    dvy;
         float    dax;
         float    day;
+        float    throttle_mix;
     };
         
 private:
@@ -107,6 +137,8 @@ private:
     AP_Int8 frame_type;
     
     AP_MotorsMulticopter *motors;
+    const struct AP_Param::GroupInfo *motors_var_info;
+    
     AC_AttitudeControl_Multi *attitude_control;
     AC_PosControl *pos_control;
     AC_WPNav *wp_nav;
@@ -123,6 +155,9 @@ private:
     // update transition handling
     void update_transition(void);
 
+    // check for an EKF yaw reset
+    void check_yaw_reset(void);
+    
     // hold hover (for transition)
     void hold_hover(float target_climb_rate);    
 
@@ -141,6 +176,9 @@ private:
     // initialise throttle_wait when entering mode
     void init_throttle_wait();
 
+    // use multicopter rate controller
+    void multicopter_attitude_rate_update(float yaw_rate_cds, float smoothing_gain);
+    
     // main entry points for VTOL flight modes
     void init_stabilize(void);
     void control_stabilize(void);
@@ -174,6 +212,11 @@ private:
     void guided_update(void);
 
     void check_throttle_suppression(void);
+
+    void run_z_controller(void);
+
+    void setup_defaults(void);
+    void setup_defaults_table(const struct defaults_struct *defaults, uint8_t count);
     
     AP_Int16 transition_time_ms;
 
@@ -218,7 +261,14 @@ private:
 
     // ICEngine control on landing
     AP_Int8 land_icengine_cut;
+
+    // HEARTBEAT mav_type override
+    AP_Int8 mav_type;
+    uint8_t get_mav_type(void) const;
     
+    // time we last got an EKF yaw reset
+    uint32_t ekfYawReset_ms;
+
     struct {
         AP_Float gain;
         float integrator;
@@ -243,12 +293,17 @@ private:
     // last throttle value when active
     float last_throttle;
 
+    // pitch when we enter loiter mode
+    int32_t loiter_initial_pitch_cd;
+    
     const float smoothing_gain = 6;
 
     // true if we have reached the airspeed threshold for transition
     enum {
         TRANSITION_AIRSPEED_WAIT,
         TRANSITION_TIMER,
+        TRANSITION_ANGLE_WAIT_FW,
+        TRANSITION_ANGLE_WAIT_VTOL,
         TRANSITION_DONE
     } transition_state;
 
@@ -261,6 +316,9 @@ private:
     // true when in angle assist
     bool in_angle_assist:1;
 
+    // are we in a guided takeoff?
+    bool guided_takeoff:1;
+    
     struct {
         // time when motors reached lower limit
         uint32_t lower_limit_start_ms;
@@ -301,32 +359,100 @@ private:
     uint32_t last_ctrl_log_ms;
 
     // types of tilt mechanisms
-    enum {TILT_TYPE_CONTINUOUS=0, TILT_TYPE_BINARY=1};
+    enum {TILT_TYPE_CONTINUOUS=0,
+          TILT_TYPE_BINARY=1,
+          TILT_TYPE_VECTORED_YAW=2};
     
     // tiltrotor control variables
     struct {
         AP_Int16 tilt_mask;
-        AP_Int16 max_rate_dps;
+        AP_Int16 max_rate_up_dps;
+        AP_Int16 max_rate_down_dps;
         AP_Int8  max_angle_deg;
         AP_Int8  tilt_type;
+        AP_Float tilt_yaw_angle;
         float current_tilt;
         float current_throttle;
         bool motors_active:1;
     } tilt;
 
+    enum tailsitter_input {
+        TAILSITTER_INPUT_MULTICOPTER = 0,
+        TAILSITTER_INPUT_PLANE       = 1,
+    };
+
+    enum tailsitter_mask {
+        TAILSITTER_MASK_AILERON  = 1,
+        TAILSITTER_MASK_ELEVATOR = 2,
+        TAILSITTER_MASK_THROTTLE = 4,
+        TAILSITTER_MASK_RUDDER   = 8,
+    };
+    
+    // tailsitter control variables
+    struct {
+        AP_Int8 transition_angle;
+        AP_Int8 input_type;
+        AP_Int8 input_mask;
+        AP_Int8 input_mask_chan;
+        AP_Float vectored_forward_gain;
+        AP_Float vectored_hover_gain;
+        AP_Float vectored_hover_power;
+    } tailsitter;
+
+    // the attitude view of the VTOL attitude controller
+    AP_AHRS_View *ahrs_view;
+
     // time when motors were last active
     uint32_t last_motors_active_ms;
+
+    // time when we last ran the vertical accel controller
+    uint32_t last_pidz_active_ms;
+    uint32_t last_pidz_init_ms;
+
+    // time when we were last in a vtol control mode
+    uint32_t last_vtol_mode_ms;
     
     void tiltrotor_slew(float tilt);
     void tiltrotor_binary_slew(bool forward);
     void tiltrotor_update(void);
     void tiltrotor_continuous_update(void);
     void tiltrotor_binary_update(void);
+    void tiltrotor_vectored_yaw(void);
+    void tilt_compensate_up(float *thrust, uint8_t num_motors);
+    void tilt_compensate_down(float *thrust, uint8_t num_motors);
     void tilt_compensate(float *thrust, uint8_t num_motors);
+    bool is_motor_tilting(uint8_t motor) const {
+        return (((uint8_t)tilt.tilt_mask.get()) & (1U<<motor));
+    }
     bool tiltrotor_fully_fwd(void);
+    float tilt_max_change(bool up);
 
     void afs_terminate(void);
     bool guided_mode_enabled(void);
+
+    // set altitude target to current altitude
+    void set_alt_target_current(void);
+    
+    // adjust altitude target smoothly
+    void adjust_alt_target(float target_cm);
+
+    // additional options
+    AP_Int32 options;
+    enum {
+        OPTION_LEVEL_TRANSITION=(1<<0),
+        OPTION_ALLOW_FW_TAKEOFF=(1<<1),
+        OPTION_ALLOW_FW_LAND=(1<<2),
+    };
+
+    /*
+      return true if current mission item is a vtol takeoff
+     */
+    bool is_vtol_takeoff(uint16_t id) const;
+
+    /*
+      return true if current mission item is a vtol landing
+     */
+    bool is_vtol_land(uint16_t id) const;
     
 public:
     void motor_test_output();

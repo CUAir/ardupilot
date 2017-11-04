@@ -21,34 +21,103 @@
  *
  */
 
-class AP_AHRS_DCM : public AP_AHRS
-{
+class AP_AHRS_DCM : public AP_AHRS {
 public:
-    // Constructors
-    AP_AHRS_DCM(AP_InertialSensor &ins, AP_Baro &baro, AP_GPS &gps) :
-        AP_AHRS(ins, baro, gps),
-        _omega_I_sum_time(0.0f),
-        _renorm_val_sum(0.0f),
-        _renorm_val_count(0),
-        _error_rp(1.0f),
-        _error_yaw(1.0f),
-        _gps_last_update(0),
-        _ra_deltat(0.0f),
-        _ra_sum_start(0),
-        _last_declination(0.0f),
-        _mag_earth(1,0),
-        _have_gps_lock(false),
-        _last_lat(0),
-        _last_lng(0),
-        _position_offset_north(0.0f),
-        _position_offset_east(0.0f),
-        _have_position(false),
-        _last_wind_time(0),
-        _last_airspeed(0.0f),
-        _last_consistent_heading(0),
-        _imu1_weight(0.5f),
-        _last_failure_ms(0),
-        _last_startup_ms(0)
+    static AP_AHRS_DCM create(AP_InertialSensor &ins, AP_Baro &baro, AP_GPS &gps) {
+        return AP_AHRS_DCM{ins, baro, gps};
+    }
+
+    constexpr AP_AHRS_DCM(AP_AHRS_DCM &&other) = default;
+
+    /* Do not allow copies */
+    AP_AHRS_DCM(const AP_AHRS_DCM &other) = delete;
+    AP_AHRS_DCM &operator=(const AP_AHRS_DCM&) = delete;
+
+
+    // return the smoothed gyro vector corrected for drift
+    const Vector3f &get_gyro() const override {
+        return _omega;
+    }
+
+    // return rotation matrix representing rotaton from body to earth axes
+    const Matrix3f &get_rotation_body_to_ned() const override {
+        return _body_dcm_matrix;
+    }
+
+    // return the current drift correction integrator value
+    const Vector3f &get_gyro_drift() const override {
+        return _omega_I;
+    }
+
+    // reset the current gyro drift estimate
+    //  should be called if gyro offsets are recalculated
+    void reset_gyro_drift() override;
+
+    // Methods
+    void            update(bool skip_ins_update=false) override;
+    void            reset(bool recover_eulers = false) override;
+
+    // reset the current attitude, used on new IMU calibration
+    void reset_attitude(const float &roll, const float &pitch, const float &yaw) override;
+
+    // dead-reckoning support
+    virtual bool get_position(struct Location &loc) const override;
+
+    // status reporting
+    float           get_error_rp() const override {
+        return _error_rp;
+    }
+    float           get_error_yaw() const override {
+        return _error_yaw;
+    }
+
+    // return a wind estimation vector, in m/s
+    Vector3f wind_estimate() override {
+        return _wind;
+    }
+
+    void get_relative_position_D_home(float &posD) const override;
+
+    // return an airspeed estimate if available. return true
+    // if we have an estimate
+    bool airspeed_estimate(float *airspeed_ret) const override;
+
+    bool            use_compass() override;
+
+    void set_home(const Location &loc) override;
+    void estimate_wind(void);
+
+    // is the AHRS subsystem healthy?
+    bool healthy() const override;
+
+    // time that the AHRS has been up
+    uint32_t uptime_ms() const override;
+
+protected:
+    AP_AHRS_DCM(AP_InertialSensor &ins, AP_Baro &baro, AP_GPS &gps)
+        : AP_AHRS(ins, baro, gps)
+        , _omega_I_sum_time(0.0f)
+        , _renorm_val_sum(0.0f)
+        , _renorm_val_count(0)
+        , _error_rp(1.0f)
+        , _error_yaw(1.0f)
+        , _gps_last_update(0)
+        , _ra_deltat(0.0f)
+        , _ra_sum_start(0)
+        , _last_declination(0.0f)
+        , _mag_earth(1, 0)
+        , _have_gps_lock(false)
+        , _last_lat(0)
+        , _last_lng(0)
+        , _position_offset_north(0.0f)
+        , _position_offset_east(0.0f)
+        , _have_position(false)
+        , _last_wind_time(0)
+        , _last_airspeed(0.0f)
+        , _last_consistent_heading(0)
+        , _imu1_weight(0.5f)
+        , _last_failure_ms(0)
+        , _last_startup_ms(0)
     {
         _dcm_matrix.identity();
 
@@ -57,63 +126,6 @@ public:
         _ki = 0.0087f;
         _ki_yaw = 0.01f;
     }
-
-    // return the smoothed gyro vector corrected for drift
-    const Vector3f &get_gyro(void) const {
-        return _omega;
-    }
-
-    // return rotation matrix representing rotaton from body to earth axes
-    const Matrix3f &get_rotation_body_to_ned(void) const {
-        return _body_dcm_matrix;
-    }
-
-    // return the current drift correction integrator value
-    const Vector3f &get_gyro_drift(void) const {
-        return _omega_I;
-    }
-
-    // reset the current gyro drift estimate
-    //  should be called if gyro offsets are recalculated
-    void reset_gyro_drift(void);
-
-    // Methods
-    void            update(void);
-    void            reset(bool recover_eulers = false);
-
-    // reset the current attitude, used on new IMU calibration
-    void reset_attitude(const float &roll, const float &pitch, const float &yaw);
-
-    // dead-reckoning support
-    virtual bool get_position(struct Location &loc) const;
-
-    // status reporting
-    float           get_error_rp(void) const {
-        return _error_rp;
-    }
-    float           get_error_yaw(void) const {
-        return _error_yaw;
-    }
-
-    // return a wind estimation vector, in m/s
-    Vector3f wind_estimate(void) {
-        return _wind;
-    }
-
-    // return an airspeed estimate if available. return true
-    // if we have an estimate
-    bool airspeed_estimate(float *airspeed_ret) const;
-
-    bool            use_compass(void);
-
-    void set_home(const Location &loc);
-    void estimate_wind(void);
-
-    // is the AHRS subsystem healthy?
-    bool healthy(void) const;
-
-    // time that the AHRS has been up
-    uint32_t uptime_ms(void) const;
 
 private:
     float _ki;

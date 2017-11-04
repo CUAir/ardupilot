@@ -43,7 +43,7 @@ void AP_MotorsTri::init(motor_frame_class frame_class, motor_frame_type frame_ty
     // find the yaw servo
     _yaw_servo = SRV_Channels::get_channel_for(SRV_Channel::k_motor7, AP_MOTORS_CH_TRI_YAW);
     if (!_yaw_servo) {
-        GCS_MAVLINK::send_statustext_all(MAV_SEVERITY_ERROR, "MotorsTri: unable to setup yaw channel");
+        gcs().send_text(MAV_SEVERITY_ERROR, "MotorsTri: unable to setup yaw channel");
         // don't set initialised_ok
         return;
     }
@@ -75,47 +75,31 @@ void AP_MotorsTri::set_update_rate( uint16_t speed_hz )
     rc_set_freq(mask, _speed_hz);
 }
 
-// enable - starts allowing signals to be sent to motors
-void AP_MotorsTri::enable()
-{
-    // enable output channels
-    rc_enable_ch(AP_MOTORS_MOT_1);
-    rc_enable_ch(AP_MOTORS_MOT_2);
-    rc_enable_ch(AP_MOTORS_MOT_4);
-    rc_enable_ch(AP_MOTORS_CH_TRI_YAW);
-}
-
 void AP_MotorsTri::output_to_motors()
 {
     switch (_spool_mode) {
         case SHUT_DOWN:
             // sends minimum values out to the motors
-            hal.rcout->cork();
             rc_write(AP_MOTORS_MOT_1, get_pwm_output_min());
             rc_write(AP_MOTORS_MOT_2, get_pwm_output_min());
             rc_write(AP_MOTORS_MOT_4, get_pwm_output_min());
             rc_write(AP_MOTORS_CH_TRI_YAW, _yaw_servo->get_trim());
-            hal.rcout->push();
             break;
         case SPIN_WHEN_ARMED:
             // sends output to motors when armed but not flying
-            hal.rcout->cork();
             rc_write(AP_MOTORS_MOT_1, calc_spin_up_to_pwm());
             rc_write(AP_MOTORS_MOT_2, calc_spin_up_to_pwm());
             rc_write(AP_MOTORS_MOT_4, calc_spin_up_to_pwm());
             rc_write(AP_MOTORS_CH_TRI_YAW, _yaw_servo->get_trim());
-            hal.rcout->push();
             break;
         case SPOOL_UP:
         case THROTTLE_UNLIMITED:
         case SPOOL_DOWN:
             // set motor output based on thrust requests
-            hal.rcout->cork();
             rc_write(AP_MOTORS_MOT_1, calc_thrust_to_pwm(_thrust_right));
             rc_write(AP_MOTORS_MOT_2, calc_thrust_to_pwm(_thrust_left));
             rc_write(AP_MOTORS_MOT_4, calc_thrust_to_pwm(_thrust_rear));
             rc_write(AP_MOTORS_CH_TRI_YAW, calc_yaw_radio_output(_pivot_angle, radians(_yaw_servo_angle_max_deg)));
-            hal.rcout->push();
             break;
     }
 }
@@ -325,4 +309,16 @@ void AP_MotorsTri::thrust_compensation(void)
         _thrust_left  = thrust[1];
         _thrust_rear  = thrust[3];
     }
+}
+
+/*
+  override tricopter tail servo output in output_motor_mask
+ */
+void AP_MotorsTri::output_motor_mask(float thrust, uint8_t mask)
+{
+    // normal multicopter output
+    AP_MotorsMulticopter::output_motor_mask(thrust, mask);
+
+    // and override yaw servo
+    rc_write(AP_MOTORS_CH_TRI_YAW, _yaw_servo->get_trim());
 }

@@ -25,7 +25,7 @@
 #include <AP_Vehicle/AP_Vehicle.h>
 #include <stdio.h>
 
-#if APM_BUILD_TYPE(APM_BUILD_ArduCopter)
+#if APM_BUILD_TYPE(APM_BUILD_ArduCopter) || APM_BUILD_TYPE(APM_BUILD_ArduSub)
 #define SCHEDULER_DEFAULT_LOOP_RATE 400
 #else
 #define SCHEDULER_DEFAULT_LOOP_RATE  50
@@ -93,7 +93,7 @@ void AP_Scheduler::run(uint32_t time_available)
     uint32_t run_started_usec = AP_HAL::micros();
     uint32_t now = run_started_usec;
 
-    if (_debug > 3 && _perf_counters == nullptr) {
+    if (_debug > 1 && _perf_counters == nullptr) {
         _perf_counters = new AP_HAL::Util::perf_counter_t[_num_tasks];
         if (_perf_counters != nullptr) {
             for (uint8_t i=0; i<_num_tasks; i++) {
@@ -114,7 +114,7 @@ void AP_Scheduler::run(uint32_t time_available)
 
             if (dt >= interval_ticks*2) {
                 // we've slipped a whole run of this task!
-                if (_debug > 1) {
+                if (_debug > 4) {
                     ::printf("Scheduler slip task[%u-%s] (%u/%u/%u)\n",
                              (unsigned)i,
                              _tasks[i].name,
@@ -128,11 +128,11 @@ void AP_Scheduler::run(uint32_t time_available)
                 // run it
                 _task_time_started = now;
                 current_task = i;
-                if (_debug > 3 && _perf_counters && _perf_counters[i]) {
+                if (_debug > 1 && _perf_counters && _perf_counters[i]) {
                     hal.util->perf_begin(_perf_counters[i]);
                 }
                 _tasks[i].function();
-                if (_debug > 3 && _perf_counters && _perf_counters[i]) {
+                if (_debug > 1 && _perf_counters && _perf_counters[i]) {
                     hal.util->perf_end(_perf_counters[i]);
                 }
                 current_task = -1;
@@ -189,11 +189,12 @@ uint16_t AP_Scheduler::time_available_usec(void)
 /*
   calculate load average as a number from 0 to 1
  */
-float AP_Scheduler::load_average(uint32_t tick_time_usec) const
+float AP_Scheduler::load_average() const
 {
     if (_spare_ticks == 0) {
         return 0.0f;
     }
-    uint32_t used_time = tick_time_usec - (_spare_micros/_spare_ticks);
-    return used_time / (float)tick_time_usec;
+    const uint32_t loop_us = get_loop_period_us();
+    const uint32_t used_time = loop_us - (_spare_micros/_spare_ticks);
+    return used_time / (float)loop_us;
 }

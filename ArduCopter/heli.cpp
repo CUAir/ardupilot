@@ -5,7 +5,7 @@
 #if FRAME_CONFIG == HELI_FRAME
 
 #ifndef HELI_DYNAMIC_FLIGHT_SPEED_MIN
- #define HELI_DYNAMIC_FLIGHT_SPEED_MIN      500     // we are in "dynamic flight" when the speed is over 1m/s for 2 seconds
+ #define HELI_DYNAMIC_FLIGHT_SPEED_MIN      500     // we are in "dynamic flight" when the speed is over 5m/s for 2 seconds
 #endif
 
 // counter to control dynamic flight profile
@@ -42,10 +42,10 @@ void Copter::check_dynamic_flight(void)
         moving = (motors->get_throttle() > 0.8f || ahrs.pitch_sensor < -1500);
     }
 
-    if (!moving && rangefinder_state.enabled && rangefinder.status() == RangeFinder::RangeFinder_Good) {
+    if (!moving && rangefinder_state.enabled && rangefinder.status_orient(ROTATION_PITCH_270) == RangeFinder::RangeFinder_Good) {
         // when we are more than 2m from the ground with good
         // rangefinder lock consider it to be dynamic flight
-        moving = (rangefinder.distance_cm() > 200);
+        moving = (rangefinder.distance_cm_orient(ROTATION_PITCH_270) > 200);
     }
     
     if (moving) {
@@ -108,6 +108,7 @@ void Copter::heli_update_landing_swash()
             break;
 
         case RTL:
+        case SMART_RTL:
             if (rtl_state == RTL_Land) {
                 motors->set_collective_for_landing(true);
             }else{

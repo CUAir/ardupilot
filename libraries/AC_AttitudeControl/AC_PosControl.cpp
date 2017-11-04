@@ -23,7 +23,7 @@ const AP_Param::GroupInfo AC_PosControl::var_info[] = {
 // Note that the Vector/Matrix constructors already implicitly zero
 // their values.
 //
-AC_PosControl::AC_PosControl(const AP_AHRS& ahrs, const AP_InertialNav& inav,
+AC_PosControl::AC_PosControl(const AP_AHRS_View& ahrs, const AP_InertialNav& inav,
                              const AP_Motors& motors, AC_AttitudeControl& attitude_control,
                              AC_P& p_pos_z, AC_P& p_vel_z, AC_PID& pid_accel_z,
                              AC_P& p_pos_xy, AC_PI_2D& pi_vel_xy) :
@@ -273,6 +273,12 @@ void AC_PosControl::get_stopping_point_z(Vector3f& stopping_point) const
         }
     }
 
+    // avoid divide by zero by using current position if kP is very low or acceleration is zero
+    if (_p_pos_z.kP() <= 0.0f || _accel_z_cms <= 0.0f) {
+        stopping_point.z = curr_pos_z;
+        return;
+    }
+
     // calculate the velocity at which we switch from calculating the stopping point using a linear function to a sqrt function
     linear_velocity = _accel_z_cms/_p_pos_z.kP();
 
@@ -287,7 +293,7 @@ void AC_PosControl::get_stopping_point_z(Vector3f& stopping_point) const
             stopping_point.z = curr_pos_z - (linear_distance + curr_vel_z*curr_vel_z/(2.0f*_accel_z_cms));
         }
     }
-    stopping_point.z = constrain_float(stopping_point.z, curr_pos_z - POSCONTROL_STOPPING_DIST_Z_MAX, curr_pos_z + POSCONTROL_STOPPING_DIST_Z_MAX);
+    stopping_point.z = constrain_float(stopping_point.z, curr_pos_z - POSCONTROL_STOPPING_DIST_DOWN_MAX, curr_pos_z + POSCONTROL_STOPPING_DIST_UP_MAX);
 }
 
 /// init_takeoff - initialises target altitude if we are taking off
@@ -488,7 +494,7 @@ void AC_PosControl::accel_to_throttle(float accel_target_z)
     // get d term
     d = _pid_accel_z.get_d();
 
-    float thr_out = (p+i+d)/1000.0f +_motors.get_throttle_hover();
+    float thr_out = (p+i+d)*0.001f +_motors.get_throttle_hover();
 
     // send throttle to attitude controller with angle boost
     _attitude_control.set_throttle_out(thr_out, true, POSCONTROL_THROTTLE_CUTOFF_FREQ);
@@ -654,7 +660,7 @@ void AC_PosControl::update_xy_controller(xy_mode mode, float ekfNavVelGainScaler
 {
     // compute dt
     uint32_t now = AP_HAL::millis();
-    float dt = (now - _last_update_xy_ms) / 1000.0f;
+    float dt = (now - _last_update_xy_ms)*0.001f;
     _last_update_xy_ms = now;
 
     // sanity check dt - expect to be called faster than ~5hz
@@ -717,11 +723,11 @@ void AC_PosControl::init_vel_controller_xyz()
     init_ekf_z_reset();
 }
 
-/// update_velocity_controller_xyz - run the velocity controller - should be called at 100hz or higher
-///     velocity targets should we set using set_desired_velocity_xyz() method
+/// update_velocity_controller_xy - run the velocity controller - should be called at 100hz or higher
+///     velocity targets should we set using set_desired_velocity_xy() method
 ///     callers should use get_roll() and get_pitch() methods and sent to the attitude controller
 ///     throttle targets will be sent directly to the motors
-void AC_PosControl::update_vel_controller_xyz(float ekfNavVelGainScaler)
+void AC_PosControl::update_vel_controller_xy(float ekfNavVelGainScaler)
 {
     // capture time since last iteration
     uint32_t now = AP_HAL::millis();
@@ -755,6 +761,16 @@ void AC_PosControl::update_vel_controller_xyz(float ekfNavVelGainScaler)
         // update xy update time
         _last_update_xy_ms = now;
     }
+}
+
+
+/// update_velocity_controller_xyz - run the velocity controller - should be called at 100hz or higher
+///     velocity targets should we set using set_desired_velocity_xyz() method
+///     callers should use get_roll() and get_pitch() methods and sent to the attitude controller
+///     throttle targets will be sent directly to the motors
+void AC_PosControl::update_vel_controller_xyz(float ekfNavVelGainScaler)
+{
+    update_vel_controller_xy(ekfNavVelGainScaler);
 
     // update altitude target
     set_alt_target_from_climb_rate_ff(_vel_desired.z, _dt, false);

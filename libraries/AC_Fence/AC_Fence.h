@@ -22,6 +22,7 @@
 
 // default boundaries
 #define AC_FENCE_ALT_MAX_DEFAULT                    100.0f  // default max altitude is 100m
+#define AC_FENCE_ALT_MIN_DEFAULT                    -10.0f  // default maximum depth in meters
 #define AC_FENCE_CIRCLE_RADIUS_DEFAULT              300.0f  // default circular fence radius is 300m
 #define AC_FENCE_ALT_MAX_BACKUP_DISTANCE            20.0f   // after fence is broken we recreate the fence 20m further up
 #define AC_FENCE_CIRCLE_RADIUS_BACKUP_DISTANCE      20.0f   // after fence is broken we recreate the fence 20m further out
@@ -34,12 +35,18 @@
 class AC_Fence
 {
 public:
+    static AC_Fence create(const AP_AHRS &ahrs, const AP_InertialNav &inav) {
+        return AC_Fence{ahrs, inav};
+    }
 
-    /// Constructor
-    AC_Fence(const AP_AHRS& ahrs, const AP_InertialNav& inav);
+    constexpr AC_Fence(AC_Fence &&other) = default;
+
+    /* Do not allow copies */
+    AC_Fence(const AC_Fence &other) = delete;
+    AC_Fence &operator=(const AC_Fence&) = delete;
 
     /// enable - allows fence to be enabled/disabled.  Note: this does not update the eeprom saved value
-    void enable(bool true_false) { _enabled = true_false; }
+    void enable(bool value);
 
     /// enabled - returns true if fence is enabled
     bool enabled() const { return _enabled; }
@@ -48,7 +55,7 @@ public:
     uint8_t get_enabled_fences() const;
 
     /// pre_arm_check - returns true if all pre-takeoff checks have completed successfully
-    bool pre_arm_check() const;
+    bool pre_arm_check(const char* &fail_msg) const;
 
     ///
     /// methods to check we are within the boundaries and recover
@@ -77,7 +84,10 @@ public:
     uint8_t get_action() const { return _action.get(); }
 
     /// get_safe_alt - returns maximum safe altitude (i.e. alt_max - margin)
-    float get_safe_alt() const { return _alt_max - _margin; }
+    float get_safe_alt_max() const { return _alt_max - _margin; }
+
+    /// get_safe_alt_min - returns the minimum safe altitude (i.e. alt_min - margin)
+    float get_safe_alt_min() const { return _alt_min + _margin; }
 
     /// get_radius - returns the fence radius in meters
     float get_radius() const { return _circle_radius.get(); }
@@ -108,11 +118,12 @@ public:
     bool boundary_breached(const Vector2f& location, uint16_t num_points, const Vector2f* points) const;
 
     /// handler for polygon fence messages with GCS
-    void handle_msg(mavlink_channel_t chan, mavlink_message_t* msg);
+    void handle_msg(GCS_MAVLINK &link, mavlink_message_t* msg);
 
     static const struct AP_Param::GroupInfo var_info[];
 
 private:
+    AC_Fence(const AP_AHRS &ahrs, const AP_InertialNav &inav);
 
     /// record_breach - update breach bitmask, time and count
     void record_breach(uint8_t fence_type);
@@ -132,6 +143,7 @@ private:
     AP_Int8         _enabled_fences;        // bit mask holding which fences are enabled
     AP_Int8         _action;                // recovery action specified by user
     AP_Float        _alt_max;               // altitude upper limit in meters
+    AP_Float        _alt_min;               // altitude lower limit in meters
     AP_Float        _circle_radius;         // circle fence radius in meters
     AP_Float        _margin;                // distance in meters that autopilot's should maintain from the fence to avoid a breach
     AP_Int8         _total;                 // number of polygon points saved in eeprom

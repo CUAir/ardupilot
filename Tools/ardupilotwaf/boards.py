@@ -29,6 +29,9 @@ class BoardMeta(type):
 class Board:
     abstract = True
 
+    def __init__(self):
+        self.with_uavcan = False
+
     def configure(self, cfg):
         cfg.env.TOOLCHAIN = self.toolchain
         cfg.load('toolchain')
@@ -125,6 +128,7 @@ class Board:
             '-Werror=array-bounds',
             '-Werror=uninitialized',
             '-Werror=init-self',
+            '-Werror=switch',
             '-Wfatal-errors',
         ]
 
@@ -156,6 +160,26 @@ class Board:
         else:
             env.LINKFLAGS += [
                 '-Wl,--gc-sections',
+            ]
+
+        if self.with_uavcan:
+            env.AP_LIBRARIES += [
+                'AP_UAVCAN',
+                'modules/uavcan/libuavcan/src/**/*.cpp'
+                ]
+
+            env.CXXFLAGS += [
+                '-Wno-error=cast-align',
+            ]
+            
+            env.DEFINES.update(
+                UAVCAN_CPP_VERSION = 'UAVCAN_CPP03',
+                UAVCAN_NO_ASSERTIONS = 1,
+                UAVCAN_NULLPTR = 'nullptr'
+            )
+
+            env.INCLUDES += [
+                cfg.srcnode.find_dir('modules/uavcan/libuavcan/include').abspath()
             ]
 
         # We always want to use PRI format macros
@@ -245,6 +269,12 @@ class linux(Board):
             'AP_HAL_Linux',
         ]
 
+    def build(self, bld):
+        super(linux, self).build(bld)
+        if bld.options.upload:
+            waflib.Options.commands.append('rsync')
+            # Avoid infinite recursion
+            bld.options.upload = False
 
 class minlure(linux):
     def configure_env(self, cfg, env):
@@ -285,6 +315,16 @@ class navio2(linux):
             CONFIG_HAL_BOARD_SUBTYPE = 'HAL_BOARD_SUBTYPE_LINUX_NAVIO2',
         )
 
+class edge(linux):
+    toolchain = 'arm-linux-gnueabihf'
+
+    def configure_env(self, cfg, env):
+        super(edge, self).configure_env(cfg, env)
+
+        env.DEFINES.update(
+            CONFIG_HAL_BOARD_SUBTYPE = 'HAL_BOARD_SUBTYPE_LINUX_EDGE',
+        )
+
 class zynq(linux):
     toolchain = 'arm-xilinx-linux-gnueabi'
 
@@ -293,6 +333,16 @@ class zynq(linux):
 
         env.DEFINES.update(
             CONFIG_HAL_BOARD_SUBTYPE = 'HAL_BOARD_SUBTYPE_LINUX_ZYNQ',
+        )
+
+class ocpoc_zynq(linux):
+    toolchain = 'arm-linux-gnueabihf'
+
+    def configure_env(self, cfg, env):
+        super(ocpoc_zynq, self).configure_env(cfg, env)
+
+        env.DEFINES.update(
+            CONFIG_HAL_BOARD_SUBTYPE = 'HAL_BOARD_SUBTYPE_LINUX_OCPOC_ZYNQ',
         )
 
 class bbbmini(linux):
@@ -345,16 +395,6 @@ class disco(linux):
             CONFIG_HAL_BOARD_SUBTYPE = 'HAL_BOARD_SUBTYPE_LINUX_DISCO',
         )
 
-class raspilot(linux):
-    toolchain = 'arm-linux-gnueabihf'
-
-    def configure_env(self, cfg, env):
-        super(raspilot, self).configure_env(cfg, env)
-
-        env.DEFINES.update(
-            CONFIG_HAL_BOARD_SUBTYPE = 'HAL_BOARD_SUBTYPE_LINUX_RASPILOT',
-        )
-
 class erlebrain2(linux):
     toolchain = 'arm-linux-gnueabihf'
 
@@ -385,16 +425,6 @@ class dark(linux):
             CONFIG_HAL_BOARD_SUBTYPE = 'HAL_BOARD_SUBTYPE_LINUX_DARK',
         )
 
-class urus(linux):
-    toolchain = 'arm-linux-gnueabihf'
-
-    def configure_env(self, cfg, env):
-        super(urus, self).configure_env(cfg, env)
-
-        env.DEFINES.update(
-            CONFIG_HAL_BOARD_SUBTYPE = 'HAL_BOARD_SUBTYPE_LINUX_URUS',
-        )
-
 class pxfmini(linux):
     toolchain = 'arm-linux-gnueabihf'
 
@@ -418,9 +448,30 @@ class px4(Board):
     toolchain = 'arm-none-eabi'
 
     def __init__(self):
+        # bootloader name: a file with that name will be used and installed
+        # on ROMFS
+        super(px4, self).__init__()
+
         self.bootloader_name = None
+
+        # board name: it's the name of this board that's also used as path
+        # in ROMFS: don't add spaces
         self.board_name = None
+
+        # px4io binary name: this is the name of the IO binary to be installed
+        # in ROMFS
         self.px4io_name = None
+
+        # board-specific init script: if True a file with `board_name` name will
+        # be searched for in sources and installed in ROMFS as rc.board. This
+        # init script is used to change the init behavior among different boards.
+        self.board_rc = False
+
+        # Path relative to the ROMFS directory where to find a file with default
+        # parameters. If set this file will be copied to /etc/defaults.parm
+        # inside the ROMFS
+        self.param_defaults = None
+
         self.ROMFS_EXCLUDE = []
 
     def configure(self, cfg):
@@ -444,6 +495,7 @@ class px4(Board):
             '-Wlogical-op',
             '-Wframe-larger-than=1300',
             '-fsingle-precision-constant',
+            '-Wno-attributes',
             '-Wno-error=double-promotion',
             '-Wno-error=missing-declarations',
             '-Wno-error=float-equal',
@@ -458,11 +510,14 @@ class px4(Board):
             'PX4NuttX',
             'uavcan',
         ]
+
         env.ROMFS_EXCLUDE = self.ROMFS_EXCLUDE
 
         env.PX4_BOOTLOADER_NAME = self.bootloader_name
         env.PX4_BOARD_NAME = self.board_name
+        env.PX4_BOARD_RC = self.board_rc
         env.PX4_PX4IO_NAME = self.px4io_name
+        env.PX4_PARAM_DEFAULTS = self.param_defaults
 
         env.AP_PROGRAM_AS_STLIB = True
 
@@ -492,6 +547,7 @@ class px4_v2(px4):
         self.board_name = 'px4fmu-v2'
         self.px4io_name = 'px4io-v2'
         self.romfs_exclude(['oreoled.bin'])
+        self.with_uavcan = True
 
 class px4_v3(px4):
     name = 'px4-v3'
@@ -500,6 +556,7 @@ class px4_v3(px4):
         self.bootloader_name = 'px4fmuv2_bl.bin'
         self.board_name = 'px4fmu-v3'
         self.px4io_name = 'px4io-v2'
+        self.with_uavcan = True
 
 class px4_v4(px4):
     name = 'px4-v4'
@@ -508,3 +565,24 @@ class px4_v4(px4):
         self.bootloader_name = 'px4fmuv4_bl.bin'
         self.board_name = 'px4fmu-v4'
         self.romfs_exclude(['oreoled.bin'])
+        self.with_uavcan = True
+
+class px4_v4pro(px4):
+    name = 'px4-v4pro'
+    def __init__(self):
+        super(px4_v4pro, self).__init__()
+        self.bootloader_name = 'px4fmuv4pro_bl.bin'
+        self.board_name = 'px4fmu-v4pro'
+        self.px4io_name = 'px4io-v2'
+        self.romfs_exclude(['oreoled.bin'])
+        self.with_uavcan = True		
+		
+class aerofc_v1(px4):
+    name = 'aerofc-v1'
+    def __init__(self):
+        super(aerofc_v1, self).__init__()
+        self.bootloader_name = 'aerofcv1_bl.bin'
+        self.board_name = 'aerofc-v1'
+        self.romfs_exclude(['oreoled.bin'])
+        self.board_rc = True
+        self.param_defaults = '../../../Tools/Frame_params/intel-aero-rtf.param'

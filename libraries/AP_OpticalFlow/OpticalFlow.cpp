@@ -58,12 +58,12 @@ const AP_Param::GroupInfo OpticalFlow::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("_POS", 4, OpticalFlow, _pos_offset, 0.0f),
 
-    // @Param: _BUS_ID
-    // @DisplayName: ID on the bus
-    // @Description: This is used to select between multiple possible bus IDs for some sensor types. For PX4Flow you can choose 0 to 7 for the 8 possible addresses on the I2C bus.
-    // @Range: 0 255
+    // @Param: _ADDR
+    // @DisplayName: Address on the bus
+    // @Description: This is used to select between multiple possible I2C addresses for some sensor types. For PX4Flow you can choose 0 to 7 for the 8 possible addresses on the I2C bus.
+    // @Range: 0 127
     // @User: Advanced
-    AP_GROUPINFO("_BUS_ID", 5,  OpticalFlow, _bus_id,   0),
+    AP_GROUPINFO("_ADDR", 5,  OpticalFlow, _address,   0),
     
     AP_GROUPEND
 };
@@ -83,6 +83,11 @@ OpticalFlow::OpticalFlow(AP_AHRS_NavEKF &ahrs)
 
 void OpticalFlow::init(void)
 {
+    // return immediately if not enabled
+    if (!_enabled) {
+        return;
+    }
+
     if (!backend) {
 #if CONFIG_HAL_BOARD == HAL_BOARD_PX4 || CONFIG_HAL_BOARD == HAL_BOARD_VRBRAIN
         if (AP_BoardConfig::get_board_type() == AP_BoardConfig::PX4_BOARD_PIXHAWK) {
@@ -95,8 +100,7 @@ void OpticalFlow::init(void)
 #elif CONFIG_HAL_BOARD == HAL_BOARD_SITL
         backend = new AP_OpticalFlow_SITL(*this);
 #elif CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_BEBOP ||\
-    CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_MINLURE ||\
-    CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_BBBMINI
+    CONFIG_HAL_BOARD_SUBTYPE == HAL_BOARD_SUBTYPE_LINUX_MINLURE
         backend = new AP_OpticalFlow_Onboard(*this);
 #elif CONFIG_HAL_BOARD == HAL_BOARD_LINUX
         backend = AP_OpticalFlow_PX4Flow::detect(*this);
@@ -105,8 +109,6 @@ void OpticalFlow::init(void)
 
     if (backend != nullptr) {
         backend->init();
-    } else {
-        _enabled = 0;
     }
 }
 

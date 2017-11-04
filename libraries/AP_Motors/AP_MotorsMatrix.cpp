@@ -40,19 +40,12 @@ void AP_MotorsMatrix::init(motor_frame_class frame_class, motor_frame_type frame
 // set update rate to motors - a value in hertz
 void AP_MotorsMatrix::set_update_rate( uint16_t speed_hz )
 {
-    uint8_t i;
-
     // record requested speed
     _speed_hz = speed_hz;
 
-    // check each enabled motor
-    uint32_t mask = 0;
-    for( i=0; i<AP_MOTORS_MAX_NUM_MOTORS; i++ ) {
-        if( motor_enabled[i] ) {
-		mask |= 1U << i;
-        }
-    }
-    rc_set_freq( mask, _speed_hz );
+    // we can use a mask of 0xFF here as rc_set_freq masks with actual
+    // motor mask
+    rc_set_freq(0xFF, _speed_hz );
 }
 
 // set frame class (i.e. quad, hexa, heli) and type (i.e. x, plus)
@@ -70,19 +63,6 @@ void AP_MotorsMatrix::set_frame_class_and_type(motor_frame_class frame_class, mo
 
     // enable fast channels or instant pwm
     set_update_rate(_speed_hz);
-}
-
-// enable - starts allowing signals to be sent to motors
-void AP_MotorsMatrix::enable()
-{
-    int8_t i;
-
-    // enable output channels
-    for( i=0; i<AP_MOTORS_MAX_NUM_MOTORS; i++ ) {
-        if( motor_enabled[i] ) {
-            rc_enable_ch(i);
-        }
-    }
 }
 
 void AP_MotorsMatrix::output_to_motors()
@@ -126,13 +106,11 @@ void AP_MotorsMatrix::output_to_motors()
     }
 
     // send output to each motor
-    hal.rcout->cork();
     for (i=0; i<AP_MOTORS_MAX_NUM_MOTORS; i++) {
         if (motor_enabled[i]) {
             rc_write(i, motor_out[i]);
         }
     }
-    hal.rcout->push();
 }
 
 
@@ -302,14 +280,12 @@ void AP_MotorsMatrix::output_test(uint8_t motor_seq, int16_t pwm)
     }
 
     // loop through all the possible orders spinning any motors that match that description
-    hal.rcout->cork();
     for (uint8_t i=0; i<AP_MOTORS_MAX_NUM_MOTORS; i++) {
         if (motor_enabled[i] && _test_order[i] == motor_seq) {
             // turn on this motor
             rc_write(i, pwm);
         }
     }
-    hal.rcout->push();
 }
 
 // add_motor
@@ -517,6 +493,17 @@ void AP_MotorsMatrix::setup_motors(motor_frame_class frame_class, motor_frame_ty
                     add_motor_raw(AP_MOTORS_MOT_8,  0.5f,  -1.0f, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  5);
                     success = true;
                     break;
+                case MOTOR_FRAME_TYPE_H:
+                    add_motor_raw(AP_MOTORS_MOT_1, -1.0f,    1.0f, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  1);
+                    add_motor_raw(AP_MOTORS_MOT_2,  1.0f,   -1.0f, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  5);
+                    add_motor_raw(AP_MOTORS_MOT_3, -1.0f,  0.333f, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 2);
+                    add_motor_raw(AP_MOTORS_MOT_4, -1.0f,   -1.0f, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 4);
+                    add_motor_raw(AP_MOTORS_MOT_5,  1.0f,    1.0f, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 8);
+                    add_motor_raw(AP_MOTORS_MOT_6,  1.0f, -0.333f, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 6);
+                    add_motor_raw(AP_MOTORS_MOT_7,  1.0f,  0.333f, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  7);
+                    add_motor_raw(AP_MOTORS_MOT_8, -1.0f, -0.333f, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  3);
+                    success = true;
+                    break;
                 default:
                     // octa frame class does not support this frame type
                     break;
@@ -576,6 +563,44 @@ void AP_MotorsMatrix::setup_motors(motor_frame_class frame_class, motor_frame_ty
             }
             break;
 
+        case MOTOR_FRAME_DODECAHEXA: {
+            switch (frame_type) {
+                case MOTOR_FRAME_TYPE_PLUS:
+                    add_motor(AP_MOTORS_MOT_1,     0, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 1);  // forward-top
+                    add_motor(AP_MOTORS_MOT_2,     0, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  2);  // forward-bottom
+                    add_motor(AP_MOTORS_MOT_3,    60, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  3);  // forward-right-top
+                    add_motor(AP_MOTORS_MOT_4,    60, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 4);  // forward-right-bottom
+                    add_motor(AP_MOTORS_MOT_5,   120, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 5);  // back-right-top
+                    add_motor(AP_MOTORS_MOT_6,   120, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  6);  // back-right-bottom
+                    add_motor(AP_MOTORS_MOT_7,   180, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  7);  // back-top
+                    add_motor(AP_MOTORS_MOT_8,   180, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 8);  // back-bottom
+                    add_motor(AP_MOTORS_MOT_9,  -120, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 9);  // back-left-top
+                    add_motor(AP_MOTORS_MOT_10, -120, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  10); // back-left-bottom
+                    add_motor(AP_MOTORS_MOT_11,  -60, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  11); // forward-left-top
+                    add_motor(AP_MOTORS_MOT_12,  -60, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 12); // forward-left-bottom
+                    success = true;
+                    break;
+                case MOTOR_FRAME_TYPE_X:
+                    add_motor(AP_MOTORS_MOT_1,    30, AP_MOTORS_MATRIX_YAW_FACTOR_CCW,  1); // forward-right-top
+                    add_motor(AP_MOTORS_MOT_2,    30, AP_MOTORS_MATRIX_YAW_FACTOR_CW,   2); // forward-right-bottom
+                    add_motor(AP_MOTORS_MOT_3,    90, AP_MOTORS_MATRIX_YAW_FACTOR_CW,   3); // right-top
+                    add_motor(AP_MOTORS_MOT_4,    90, AP_MOTORS_MATRIX_YAW_FACTOR_CCW,  4); // right-bottom
+                    add_motor(AP_MOTORS_MOT_5,   150, AP_MOTORS_MATRIX_YAW_FACTOR_CCW,  5); // back-right-top
+                    add_motor(AP_MOTORS_MOT_6,   150, AP_MOTORS_MATRIX_YAW_FACTOR_CW,   6); // back-right-bottom
+                    add_motor(AP_MOTORS_MOT_7,  -150, AP_MOTORS_MATRIX_YAW_FACTOR_CW,   7); // back-left-top
+                    add_motor(AP_MOTORS_MOT_8,  -150, AP_MOTORS_MATRIX_YAW_FACTOR_CCW,  8); // back-left-bottom
+                    add_motor(AP_MOTORS_MOT_9,   -90, AP_MOTORS_MATRIX_YAW_FACTOR_CCW,  9); // left-top
+                    add_motor(AP_MOTORS_MOT_10,  -90, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  10); // left-bottom
+                    add_motor(AP_MOTORS_MOT_11,  -30, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  11); // forward-left-top
+                    add_motor(AP_MOTORS_MOT_12,  -30, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 12); // forward-left-bottom
+                    success = true;
+                    break;
+                default:
+                    // dodeca-hexa frame class does not support this frame type
+                    break;
+            }}
+            break;
+
         case MOTOR_FRAME_Y6:
             switch (frame_type) {
                 case MOTOR_FRAME_TYPE_Y6B:
@@ -586,6 +611,16 @@ void AP_MotorsMatrix::setup_motors(motor_frame_class frame_class, motor_frame_ty
                     add_motor_raw(AP_MOTORS_MOT_4,  0.0f, -1.000f, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 4);
                     add_motor_raw(AP_MOTORS_MOT_5,  1.0f,  0.500f, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  5);
                     add_motor_raw(AP_MOTORS_MOT_6,  1.0f,  0.500f, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 6);
+                    success = true;
+                    break;
+                case MOTOR_FRAME_TYPE_Y6F:
+                    // Y6 motor layout for FireFlyY6
+                    add_motor_raw(AP_MOTORS_MOT_1,  0.0f, -1.000f, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 3);
+                    add_motor_raw(AP_MOTORS_MOT_2, -1.0f,  0.500f, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 1);
+                    add_motor_raw(AP_MOTORS_MOT_3,  1.0f,  0.500f, AP_MOTORS_MATRIX_YAW_FACTOR_CCW, 5);
+                    add_motor_raw(AP_MOTORS_MOT_4,  0.0f, -1.000f, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  4);
+                    add_motor_raw(AP_MOTORS_MOT_5, -1.0f,  0.500f, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  2);
+                    add_motor_raw(AP_MOTORS_MOT_6,  1.0f,  0.500f, AP_MOTORS_MATRIX_YAW_FACTOR_CW,  6);
                     success = true;
                     break;
                 default:
