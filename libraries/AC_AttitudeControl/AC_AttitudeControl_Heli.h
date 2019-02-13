@@ -22,6 +22,7 @@
 #define AC_ATC_HELI_RATE_YAW_FF                     0.024f
 #define AC_ATC_HELI_RATE_YAW_FILT_HZ                20.0f
 
+#define AC_ATTITUDE_HELI_ANGLE_LIMIT_THROTTLE_MAX   0.95f    // Heli's use 95% of max collective before limiting frame angle
 #define AC_ATTITUDE_HELI_RATE_INTEGRATOR_LEAK_RATE  0.02f
 #define AC_ATTITUDE_HELI_RATE_RP_FF_FILTER          10.0f
 #define AC_ATTITUDE_HELI_RATE_Y_VFF_FILTER          10.0f
@@ -56,9 +57,9 @@ public:
         }
 
     // pid accessors
-    AC_PID& get_rate_roll_pid() { return _pid_rate_roll; }
-    AC_PID& get_rate_pitch_pid() { return _pid_rate_pitch; }
-    AC_PID& get_rate_yaw_pid() { return _pid_rate_yaw; }
+    AC_PID& get_rate_roll_pid() override { return _pid_rate_roll; }
+    AC_PID& get_rate_pitch_pid() override { return _pid_rate_pitch; }
+    AC_PID& get_rate_yaw_pid() override { return _pid_rate_yaw; }
 
     // passthrough_bf_roll_pitch_rate_yaw - roll and pitch are passed through directly, body-frame rate target for yaw
     void passthrough_bf_roll_pitch_rate_yaw(float roll_passthrough, float pitch_passthrough, float yaw_rate_bf_cds) override;
@@ -71,7 +72,7 @@ public:
 
 	// rate_controller_run - run lowest level body-frame rate controller and send outputs to the motors
 	// should be called at 100hz or more
-	virtual void rate_controller_run();
+	virtual void rate_controller_run() override;
 
     // Update Alt_Hold angle maximum
     void update_althold_lean_angle_max(float throttle_in) override;
@@ -95,6 +96,17 @@ public:
     // Set output throttle
     void set_throttle_out(float throttle_in, bool apply_angle_boost, float filt_cutoff) override;
 
+    // Command an euler roll and pitch angle and an euler yaw rate with angular velocity feedforward and smoothing
+    void input_euler_angle_roll_pitch_euler_rate_yaw(float euler_roll_angle_cd, float euler_pitch_angle_cd, float euler_yaw_rate_cds) override;
+
+    // Command an euler roll, pitch and yaw angle with angular velocity feedforward and smoothing
+    void input_euler_angle_roll_pitch_yaw(float euler_roll_angle_cd, float euler_pitch_angle_cd, float euler_yaw_angle_cd, bool slew_yaw) override;
+    
+    // enable/disable inverted flight
+    void set_inverted_flight(bool inverted) override {
+        _inverted_flight = inverted;
+    }
+    
     // user settable parameters
     static const struct AP_Param::GroupInfo var_info[];
 
@@ -131,7 +143,7 @@ private:
     int16_t _passthrough_yaw;
 
     // get_roll_trim - angle in centi-degrees to be added to roll angle. Used by helicopter to counter tail rotor thrust in hover
-    float get_roll_trim_rad() { return constrain_float(radians(_hover_roll_trim_scalar * _hover_roll_trim * 0.01f), -radians(10.0f),radians(10.0f));}
+    float get_roll_trim_rad() override { return constrain_float(radians(_hover_roll_trim_scalar * _hover_roll_trim * 0.01f), -radians(10.0f),radians(10.0f));}
 
     // internal variables
     float _hover_roll_trim_scalar = 0;              // scalar used to suppress Hover Roll Trim

@@ -31,6 +31,7 @@
 #include <AP_Math/AP_Math.h>
 #include <GCS_MAVLink/GCS.h>
 #include <StorageManager/StorageManager.h>
+#include <AP_BoardConfig/AP_BoardConfig.h>
 #include <stdio.h>
 
 extern const AP_HAL::HAL &hal;
@@ -67,6 +68,24 @@ const AP_Param::Info *AP_Param::_var_info;
 
 struct AP_Param::param_override *AP_Param::param_overrides = nullptr;
 uint16_t AP_Param::num_param_overrides = 0;
+
+ObjectBuffer<AP_Param::param_save> AP_Param::save_queue{30};
+bool AP_Param::registered_save_handler;
+
+// we need a dummy object for the parameter save callback
+static AP_Param save_dummy;
+
+/*
+  this holds default parameters in the normal NAME=value form for a
+  parameter file. It can be manipulated by apj_tool.py to change the
+  defaults on a binary without recompiling
+ */
+const AP_Param::param_defaults_struct AP_Param::param_defaults_data = {
+    "PARMDEF",
+    { 0x55, 0x37, 0xf4, 0xa0, 0x38, 0x5d, 0x48, 0x5b },
+    AP_PARAM_MAX_EMBEDDED_PARAM,
+    0
+};
 
 // storage object
 StorageAccess AP_Param::_storage(StorageManager::StorageParam);
@@ -637,6 +656,13 @@ bool AP_Param::is_sentinal(const Param_header &phdr)
         phdr.group_element == _sentinal_group) {
         return true;
     }
+    // also check for 0xFFFFFFFF and 0x00000000, which are the fill
+    // values for storage. These can appear if power off occurs while
+    // writing data
+    uint32_t v = *(uint32_t *)&phdr;
+    if (v == 0 || v == 0xFFFFFFFF) {
+        return true;
+    }
     return false;
 }
 
@@ -958,9 +984,10 @@ void AP_Param::notify() const {
 }
 
 
-// Save the variable to EEPROM, if supported
-//
-bool AP_Param::save(bool force_save)
+/*
+  Save the variable to HAL storage, synchronous version
+*/
+void AP_Param::save_sync(bool force_save)
 {
     uint32_t group_element = 0;
     const struct GroupInfo *ginfo;
@@ -971,7 +998,7 @@ bool AP_Param::save(bool force_save)
 
     if (info == nullptr) {
         // we don't have any info on how to store it
-        return false;
+        return;
     }
 
     struct Param_header phdr;
@@ -988,7 +1015,7 @@ bool AP_Param::save(bool force_save)
     ap = this;
     if (phdr.type != AP_PARAM_VECTOR3F && idx != 0) {
         // only vector3f can have non-zero idx for now
-        return false;
+        return;
     }
     if (idx != 0) {
         ap = (const AP_Param *)((ptrdiff_t)ap) - (idx*sizeof(float));
@@ -1008,10 +1035,10 @@ bool AP_Param::save(bool force_save)
         // found an existing copy of the variable
         eeprom_write_check(ap, ofs+sizeof(phdr), type_size((enum ap_var_type)phdr.type));
         send_parameter(name, (enum ap_var_type)phdr.type, idx);
-        return true;
+        return;
     }
     if (ofs == (uint16_t) ~0) {
-        return false;
+        return;
     }
 
     // if the value is the default value then don't save
@@ -1024,23 +1051,23 @@ bool AP_Param::save(bool force_save)
             v2 = get_default_value(this, &info->def_value);
         }
         if (is_equal(v1,v2) && !force_save) {
-            GCS_MAVLINK::send_parameter_value_all(name, (enum ap_var_type)info->type, v2);
-            return true;
+            gcs().send_parameter_value(name, (enum ap_var_type)info->type, v2);
+            return;
         }
         if (!force_save &&
             (phdr.type != AP_PARAM_INT32 &&
              (fabsf(v1-v2) < 0.0001f*fabsf(v1)))) {
             // for other than 32 bit integers, we accept values within
             // 0.01 percent of the current value as being the same
-            GCS_MAVLINK::send_parameter_value_all(name, (enum ap_var_type)info->type, v2);
-            return true;
+            gcs().send_parameter_value(name, (enum ap_var_type)info->type, v2);
+            return;
         }
     }
 
     if (ofs+type_size((enum ap_var_type)phdr.type)+2*sizeof(phdr) >= _storage.size()) {
         // we are out of room for saving variables
         hal.console->printf("EEPROM full\n");
-        return false;
+        return;
     }
 
     // write a new sentinal, then the data, then the header
@@ -1049,7 +1076,50 @@ bool AP_Param::save(bool force_save)
     eeprom_write_check(&phdr, ofs, sizeof(phdr));
 
     send_parameter(name, (enum ap_var_type)phdr.type, idx);
-    return true;
+}
+
+/*
+  put variable into queue to be saved
+*/
+void AP_Param::save(bool force_save)
+{
+    struct param_save p;
+    p.param = this;
+    p.force_save = force_save;
+    while (!save_queue.push(p)) {
+        // if we can't save to the queue
+        if (hal.util->get_soft_armed()) {
+            // if we are armed then don't sleep, instead we lose the
+            // parameter save
+            return;
+        }
+        // when we are disarmed then loop waiting for a slot to become
+        // available. This guarantees completion for large parameter
+        // set loads
+        hal.scheduler->delay_microseconds(500);
+    }
+}
+
+/*
+  background function for saving parameters. This runs on the IO thread
+ */
+void AP_Param::save_io_handler(void)
+{
+    struct param_save p;
+    while (save_queue.pop(p)) {
+        p.param->save_sync(p.force_save);
+    }
+}
+
+/*
+  wait for all parameters to save
+*/
+void AP_Param::flush(void)
+{
+    uint16_t counter = 200; // 2 seconds max
+    while (counter-- && save_queue.available()) {
+        hal.scheduler->delay(10);
+    }
 }
 
 // Load the variable from EEPROM, if supported
@@ -1250,13 +1320,18 @@ void AP_Param::setup_sketch_defaults(void)
 
 // Load all variables from EEPROM
 //
-bool AP_Param::load_all(bool check_defaults_file)
+bool AP_Param::load_all()
 {
     struct Param_header phdr;
     uint16_t ofs = sizeof(AP_Param::EEPROM_header);
 
-    reload_defaults_file(check_defaults_file);
+    reload_defaults_file(false);
 
+    if (!registered_save_handler) {
+        registered_save_handler = true;
+        hal.scheduler->register_io_process(FUNCTOR_BIND((&save_dummy), &AP_Param::save_io_handler, void));
+    }
+    
     while (ofs < _storage.size()) {
         _storage.read_block(&phdr, ofs, sizeof(phdr));
         // note that this is an || not an && for robustness
@@ -1283,10 +1358,17 @@ bool AP_Param::load_all(bool check_defaults_file)
 }
 
 /*
-  reload from hal.util defaults file
+ * reload from hal.util defaults file or embedded param region
+ * @last_pass: if this is the last pass on defaults - unknown parameters are
+ *             ignored but if this is set a warning will be emitted
  */
-void AP_Param::reload_defaults_file(bool panic_on_error)
+void AP_Param::reload_defaults_file(bool last_pass)
 {
+    if (param_defaults_data.length != 0) {
+        load_embedded_param_defaults(last_pass);
+        return;
+    }
+
 #if HAL_OS_POSIX_IO == 1
     /*
       if the HAL specifies a defaults parameter file then override
@@ -1294,7 +1376,7 @@ void AP_Param::reload_defaults_file(bool panic_on_error)
      */
     const char *default_file = hal.util->get_custom_defaults_file();
     if (default_file) {
-        if (load_defaults_file(default_file, panic_on_error)) {
+        if (load_defaults_file(default_file, last_pass)) {
             printf("Loaded defaults from %s\n", default_file);
         } else {
             printf("Failed to load defaults from %s\n", default_file);
@@ -1527,6 +1609,7 @@ AP_Param *AP_Param::next_scalar(ParamToken *token, enum ap_var_type *ptype)
                                                                     ginfo, group_nesting, &idx);
         if (info && ginfo &&
             (ginfo->flags & AP_PARAM_FLAG_ENABLE) &&
+            !(ginfo->flags & AP_PARAM_FLAG_IGNORE_ENABLE) &&
             ((AP_Int8 *)ap)->get() == 0 &&
             _hide_disabled_groups) {
             /*
@@ -1572,56 +1655,6 @@ float AP_Param::cast_to_float(enum ap_var_type type) const
         return ((AP_Float *)this)->cast_to_float();
     default:
         return NAN;
-    }
-}
-
-
-// print the value of all variables
-void AP_Param::show(const AP_Param *ap, const char *s,
-                    enum ap_var_type type, AP_HAL::BetterStream *port)
-{
-    switch (type) {
-    case AP_PARAM_INT8:
-        port->printf("%s: %d\n", s, (int)((AP_Int8 *)ap)->get());
-        break;
-    case AP_PARAM_INT16:
-        port->printf("%s: %d\n", s, (int)((AP_Int16 *)ap)->get());
-        break;
-    case AP_PARAM_INT32:
-        port->printf("%s: %ld\n", s, (long)((AP_Int32 *)ap)->get());
-        break;
-    case AP_PARAM_FLOAT:
-        port->printf("%s: %f\n", s, (double)((AP_Float *)ap)->get());
-        break;
-    default:
-        break;
-    }
-}
-
-// print the value of all variables
-void AP_Param::show(const AP_Param *ap, const ParamToken &token,
-                    enum ap_var_type type, AP_HAL::BetterStream *port)
-{
-    char s[AP_MAX_NAME_SIZE+1];
-    ap->copy_name_token(token, s, sizeof(s), true);
-    s[AP_MAX_NAME_SIZE] = 0;
-    show(ap, s, type, port);
-}
-
-// print the value of all variables
-void AP_Param::show_all(AP_HAL::BetterStream *port, bool showKeyValues)
-{
-    ParamToken token;
-    AP_Param *ap;
-    enum ap_var_type type;
-
-    for (ap=AP_Param::first(&token, &type);
-         ap;
-         ap=AP_Param::next_scalar(&token, &type)) {
-        if (showKeyValues) {
-            port->printf("Key %i: Index %i: GroupElement %i  :  ", token.key, token.idx, token.group_element);
-        }
-        show(ap, token, type, port);
     }
 }
 
@@ -1781,9 +1814,6 @@ void AP_Param::set_float(float value, enum ap_var_type var_type)
 }
 
 
-#if HAL_OS_POSIX_IO == 1
-#include <stdio.h>
-
 /*
   parse a parameter file line
  */
@@ -1809,8 +1839,12 @@ bool AP_Param::parse_param_line(char *line, char **vname, float &value)
     return true;
 }
 
+
+#if HAL_OS_POSIX_IO == 1
+#include <stdio.h>
+
 // increments num_defaults for each default found in filename
-bool AP_Param::count_defaults_in_file(const char *filename, uint16_t &num_defaults, bool panic_on_error)
+bool AP_Param::count_defaults_in_file(const char *filename, uint16_t &num_defaults)
 {
     FILE *f = fopen(filename, "r");
     if (f == nullptr) {
@@ -1829,23 +1863,17 @@ bool AP_Param::count_defaults_in_file(const char *filename, uint16_t &num_defaul
         }
         enum ap_var_type var_type;
         if (!find(pname, &var_type)) {
-            if (panic_on_error) {
-                fclose(f);
-                ::printf("invalid param %s in defaults file\n", pname);
-                AP_HAL::panic("AP_Param: Invalid param in defaults file");
-                return false;
-            } else {
-                continue;
-            }
+            continue;
         }
         num_defaults++;
     }
+
     fclose(f);
 
     return true;
 }
 
-bool AP_Param::read_param_defaults_file(const char *filename)
+bool AP_Param::read_param_defaults_file(const char *filename, bool last_pass)
 {
     FILE *f = fopen(filename, "r");
     if (f == nullptr) {
@@ -1864,6 +1892,13 @@ bool AP_Param::read_param_defaults_file(const char *filename)
         enum ap_var_type var_type;
         AP_Param *vp = find(pname, &var_type);
         if (!vp) {
+            if (last_pass) {
+                ::printf("Ignored unknown param %s in defaults file %s\n",
+                         pname, filename);
+                hal.console->printf(
+                         "Ignored unknown param %s in defaults file %s\n",
+                         pname, filename);
+            }
             continue;
         }
         param_overrides[idx].object_ptr = vp;
@@ -1880,7 +1915,7 @@ bool AP_Param::read_param_defaults_file(const char *filename)
 /*
   load a default set of parameters from a file
  */
-bool AP_Param::load_defaults_file(const char *filename, bool panic_on_error)
+bool AP_Param::load_defaults_file(const char *filename, bool last_pass)
 {
     if (filename == nullptr) {
         return false;
@@ -1896,7 +1931,7 @@ bool AP_Param::load_defaults_file(const char *filename, bool panic_on_error)
     for (char *pname = strtok_r(mutable_filename, ",", &saveptr);
          pname != nullptr;
          pname = strtok_r(nullptr, ",", &saveptr)) {
-        if (!count_defaults_in_file(pname, num_defaults, panic_on_error)) {
+        if (!count_defaults_in_file(pname, num_defaults)) {
             free(mutable_filename);
             return false;
         }
@@ -1908,7 +1943,7 @@ bool AP_Param::load_defaults_file(const char *filename, bool panic_on_error)
     }
     num_param_overrides = 0;
 
-    param_overrides = new param_override[num_defaults];
+    param_overrides = (struct param_override *)malloc(sizeof(struct param_override)*num_defaults);
     if (param_overrides == nullptr) {
         AP_HAL::panic("AP_Param: Failed to allocate overrides");
         return false;
@@ -1922,7 +1957,7 @@ bool AP_Param::load_defaults_file(const char *filename, bool panic_on_error)
     for (char *pname = strtok_r(mutable_filename, ",", &saveptr);
          pname != nullptr;
          pname = strtok_r(nullptr, ",", &saveptr)) {
-        if (!read_param_defaults_file(pname)) {
+        if (!read_param_defaults_file(pname, last_pass)) {
             free(mutable_filename);
             return false;
         }
@@ -1935,6 +1970,133 @@ bool AP_Param::load_defaults_file(const char *filename, bool panic_on_error)
 }
 
 #endif // HAL_OS_POSIX_IO
+
+/*
+  count the number of embedded parameter defaults
+ */
+bool AP_Param::count_embedded_param_defaults(uint16_t &count)
+{
+    const volatile char *ptr = param_defaults_data.data;
+    uint16_t length = param_defaults_data.length;
+    count = 0;
+    
+    while (length) {
+        char line[100];
+        char *pname;
+        float value;
+        uint16_t i;
+        uint16_t n = MIN(length, sizeof(line)-1);
+        for (i=0;i<n;i++) {
+            if (ptr[i] == '\n') {
+                break;
+            }
+        }
+        if (i == n) {
+            // no newline
+            break;
+        }
+        
+        memcpy(line, (void *)ptr, i);
+        line[i] = 0;
+
+        length -= i+1;
+        ptr += i+1;
+        
+        if (line[0] == '#' || line[0] == 0) {
+            continue;
+        }
+
+        if (!parse_param_line(line, &pname, value)) {
+            continue;
+        }
+
+        enum ap_var_type var_type;
+        if (!find(pname, &var_type)) {
+            continue;
+        }
+
+        count++;
+    }
+    return true;
+}
+
+/*
+ * load a default set of parameters from a embedded parameter region
+ * @last_pass: if this is the last pass on defaults - unknown parameters are
+ *             ignored but if this is set a warning will be emitted
+ */
+void AP_Param::load_embedded_param_defaults(bool last_pass)
+{
+    if (param_overrides != nullptr) {
+        free(param_overrides);
+        param_overrides = nullptr;
+    }
+    
+    num_param_overrides = 0;
+    uint16_t num_defaults = 0;
+    if (!count_embedded_param_defaults(num_defaults)) {
+        return;
+    }
+
+    param_overrides = (struct param_override *)malloc(sizeof(struct param_override)*num_defaults);
+    if (param_overrides == nullptr) {
+        AP_HAL::panic("AP_Param: Failed to allocate overrides");
+        return;
+    }
+    
+    const volatile char *ptr = param_defaults_data.data;
+    uint16_t length = param_defaults_data.length;
+    uint16_t idx = 0;
+    
+    while (length) {
+        char line[100];
+        char *pname;
+        float value;
+        uint16_t i;
+        uint16_t n = MIN(length, sizeof(line)-1);
+        for (i=0;i<n;i++) {
+            if (ptr[i] == '\n') {
+                break;
+            }
+        }
+        if (i == n) {
+            // no newline
+            break;
+        }
+        memcpy(line, (void*)ptr, i);
+        line[i] = 0;
+        
+        length -= i+1;
+        ptr += i+1;
+
+        if (line[0] == '#' || line[0] == 0) {
+            continue;
+        }
+        
+        if (!parse_param_line(line, &pname, value)) {
+            continue;
+        }
+        enum ap_var_type var_type;
+        AP_Param *vp = find(pname, &var_type);
+        if (!vp) {
+            if (last_pass) {
+                ::printf("Ignored unknown param %s from embedded region (offset=%u)\n",
+                         pname, unsigned(ptr - param_defaults_data.data));
+                hal.console->printf(
+                         "Ignored unknown param %s from embedded region (offset=%u)\n",
+                         pname, unsigned(ptr - param_defaults_data.data));
+            }
+            continue;
+        }
+        param_overrides[idx].object_ptr = vp;
+        param_overrides[idx].value = value;
+        idx++;
+        if (!vp->configured_in_storage()) {
+            vp->set_float(value, var_type);
+        }
+    }
+    num_param_overrides = num_defaults;
+}
 
 /* 
    find a default value given a pointer to a default value in flash
@@ -1961,7 +2123,7 @@ void AP_Param::send_parameter(const char *name, enum ap_var_type var_type, uint8
     }
     if (var_type != AP_PARAM_VECTOR3F) {
         // nice and simple for scalar types
-        GCS_MAVLINK::send_parameter_value_all(name, var_type, cast_to_float(var_type));
+        gcs().send_parameter_value(name, var_type, cast_to_float(var_type));
         return;
     }
 
@@ -1976,11 +2138,11 @@ void AP_Param::send_parameter(const char *name, enum ap_var_type var_type, uint8
     char &name_axis = name2[strlen(name)-1];
     
     name_axis = 'X';
-    GCS_MAVLINK::send_parameter_value_all(name2, AP_PARAM_FLOAT, v.x);
+    gcs().send_parameter_value(name2, AP_PARAM_FLOAT, v.x);
     name_axis = 'Y';
-    GCS_MAVLINK::send_parameter_value_all(name2, AP_PARAM_FLOAT, v.y);
+    gcs().send_parameter_value(name2, AP_PARAM_FLOAT, v.y);
     name_axis = 'Z';
-    GCS_MAVLINK::send_parameter_value_all(name2, AP_PARAM_FLOAT, v.z);
+    gcs().send_parameter_value(name2, AP_PARAM_FLOAT, v.z);
 }
 
 /*
@@ -1996,10 +2158,11 @@ uint16_t AP_Param::count_parameters(void)
         AP_Param  *vp;
         AP_Param::ParamToken token;
 
-        vp = AP_Param::first(&token, nullptr);
-        do {
+        for (vp = AP_Param::first(&token, nullptr);
+             vp != nullptr;
+             vp = AP_Param::next_scalar(&token, nullptr)) {
             ret++;
-        } while (nullptr != (vp = AP_Param::next_scalar(&token, nullptr)));
+        }
         _parameter_count = ret;
     }
     return ret;
@@ -2034,3 +2197,136 @@ bool AP_Param::set_default_by_name(const char *name, float value)
     // not a supported type
     return false;
 }
+
+/*
+  set parameter defaults from a defaults_struct table
+  sends GCS message and panics (in SITL only) if parameter is not found
+ */
+void AP_Param::set_defaults_from_table(const struct defaults_table_struct *table, uint8_t count)
+{
+    for (uint8_t i=0; i<count; i++) {
+        if (!AP_Param::set_default_by_name(table[i].name, table[i].value)) {
+            char *buf = nullptr;
+            if (asprintf(&buf, "param deflt fail:%s", table[i].name) > 0) {
+                AP_BoardConfig::sensor_config_error(buf);
+            }
+        }
+    }
+}
+
+/*
+  set a value by name
+ */
+bool AP_Param::set_by_name(const char *name, float value)
+{
+    enum ap_var_type vtype;
+    AP_Param *vp = find(name, &vtype);
+    if (vp == nullptr) {
+        return false;
+    }
+    switch (vtype) {
+    case AP_PARAM_INT8:
+        ((AP_Int8 *)vp)->set(value);
+        return true;
+    case AP_PARAM_INT16:
+        ((AP_Int16 *)vp)->set(value);
+        return true;
+    case AP_PARAM_INT32:
+        ((AP_Int32 *)vp)->set(value);
+        return true;
+    case AP_PARAM_FLOAT:
+        ((AP_Float *)vp)->set(value);
+        return true;
+    default:
+        break;
+    }
+    // not a supported type
+    return false;
+}
+
+/*
+  set and save a value by name
+ */
+bool AP_Param::set_and_save_by_name(const char *name, float value)
+{
+    enum ap_var_type vtype;
+    AP_Param *vp = find(name, &vtype);
+    if (vp == nullptr) {
+        return false;
+    }
+    switch (vtype) {
+    case AP_PARAM_INT8:
+        ((AP_Int8 *)vp)->set_and_save(value);
+        return true;
+    case AP_PARAM_INT16:
+        ((AP_Int16 *)vp)->set_and_save(value);
+        return true;
+    case AP_PARAM_INT32:
+        ((AP_Int32 *)vp)->set_and_save(value);
+        return true;
+    case AP_PARAM_FLOAT:
+        ((AP_Float *)vp)->set_and_save(value);
+        return true;
+    default:
+        break;
+    }
+    // not a supported type
+    return false;
+}
+
+#if AP_PARAM_KEY_DUMP
+/*
+  do not remove this show_all() code, it is essential for debugging
+  and creating conversion tables
+ */
+
+// print the value of all variables
+void AP_Param::show(const AP_Param *ap, const char *s,
+                    enum ap_var_type type, AP_HAL::BetterStream *port)
+{
+    switch (type) {
+    case AP_PARAM_INT8:
+        port->printf("%s: %d\n", s, (int)((AP_Int8 *)ap)->get());
+        break;
+    case AP_PARAM_INT16:
+        port->printf("%s: %d\n", s, (int)((AP_Int16 *)ap)->get());
+        break;
+    case AP_PARAM_INT32:
+        port->printf("%s: %ld\n", s, (long)((AP_Int32 *)ap)->get());
+        break;
+    case AP_PARAM_FLOAT:
+        port->printf("%s: %f\n", s, (double)((AP_Float *)ap)->get());
+        break;
+    default:
+        break;
+    }
+}
+
+// print the value of all variables
+void AP_Param::show(const AP_Param *ap, const ParamToken &token,
+                    enum ap_var_type type, AP_HAL::BetterStream *port)
+{
+    char s[AP_MAX_NAME_SIZE+1];
+    ap->copy_name_token(token, s, sizeof(s), true);
+    s[AP_MAX_NAME_SIZE] = 0;
+    show(ap, s, type, port);
+}
+
+// print the value of all variables
+void AP_Param::show_all(AP_HAL::BetterStream *port, bool showKeyValues)
+{
+    ParamToken token;
+    AP_Param *ap;
+    enum ap_var_type type;
+
+    for (ap=AP_Param::first(&token, &type);
+         ap;
+         ap=AP_Param::next_scalar(&token, &type)) {
+        if (showKeyValues) {
+            port->printf("Key %i: Index %i: GroupElement %i  :  ", token.key, token.idx, token.group_element);
+        }
+        show(ap, token, type, port);
+    }
+}
+#endif // AP_PARAM_KEY_DUMP
+

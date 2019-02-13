@@ -27,6 +27,8 @@ bool SoloGimbal::aligned()
 
 gimbal_mode_t SoloGimbal::get_mode()
 {
+    const AP_AHRS_NavEKF &_ahrs = AP::ahrs_navekf();
+
     if ((_gimbalParams.initialized() && is_zero(_gimbalParams.get_K_rate())) || (_ahrs.get_rotation_body_to_ned().c.z < 0 && !(_lockedToBody || _calibrator.running()))) {
         return GIMBAL_MODE_IDLE;
     } else if (!_ekf.getStatus()) {
@@ -38,7 +40,7 @@ gimbal_mode_t SoloGimbal::get_mode()
     }
 }
 
-void SoloGimbal::receive_feedback(mavlink_channel_t chan, mavlink_message_t *msg)
+void SoloGimbal::receive_feedback(mavlink_channel_t chan, const mavlink_message_t *msg)
 {
     mavlink_gimbal_report_t report_msg;
     mavlink_msg_gimbal_report_decode(msg, &report_msg);
@@ -49,6 +51,8 @@ void SoloGimbal::receive_feedback(mavlink_channel_t chan, mavlink_message_t *msg
 
     if (report_msg.target_system != 1) {
         _state = GIMBAL_STATE_NOT_PRESENT;
+    } else {
+        GCS_MAVLINK::set_channel_private(chan);
     }
 
     switch(_state) {
@@ -109,8 +113,10 @@ void SoloGimbal::send_controls(mavlink_channel_t chan)
                 if (_ang_vel_dem_radsLen > radians(400)) {
                     _ang_vel_dem_rads *= radians(400)/_ang_vel_dem_radsLen;
                 }
-                mavlink_msg_gimbal_control_send(chan, mavlink_system.sysid, _compid,
-                                                _ang_vel_dem_rads.x, _ang_vel_dem_rads.y, _ang_vel_dem_rads.z);
+                if (HAVE_PAYLOAD_SPACE(chan, GIMBAL_CONTROL)) {
+                    mavlink_msg_gimbal_control_send(chan, mavlink_system.sysid, _compid,
+                                                    _ang_vel_dem_rads.x, _ang_vel_dem_rads.y, _ang_vel_dem_rads.z);
+                }
                 break;
             }
             case GIMBAL_MODE_STABILIZE: {
@@ -122,8 +128,10 @@ void SoloGimbal::send_controls(mavlink_channel_t chan)
                 if (ang_vel_dem_norm > radians(400)) {
                     _ang_vel_dem_rads *= radians(400)/ang_vel_dem_norm;
                 }
-                mavlink_msg_gimbal_control_send(chan, mavlink_system.sysid, _compid,
-                                                _ang_vel_dem_rads.x, _ang_vel_dem_rads.y, _ang_vel_dem_rads.z);
+                if (HAVE_PAYLOAD_SPACE(chan, GIMBAL_CONTROL)) {
+                    mavlink_msg_gimbal_control_send(chan, mavlink_system.sysid, _compid,
+                                                    _ang_vel_dem_rads.x, _ang_vel_dem_rads.y, _ang_vel_dem_rads.z);
+                }
                 break;
             }
             default:
@@ -209,7 +217,7 @@ void SoloGimbal::update_estimators()
 }
 
 void SoloGimbal::readVehicleDeltaAngle(uint8_t ins_index, Vector3f &dAng) {
-    const AP_InertialSensor &ins = _ahrs.get_ins();
+    const AP_InertialSensor &ins = AP::ins();
 
     if (ins_index < ins.get_gyro_count()) {
         if (!ins.get_delta_angle(ins_index,dAng)) {
@@ -219,7 +227,7 @@ void SoloGimbal::readVehicleDeltaAngle(uint8_t ins_index, Vector3f &dAng) {
 }
 
 void SoloGimbal::update_fast() {
-    const AP_InertialSensor &ins = _ahrs.get_ins();
+    const AP_InertialSensor &ins = AP::ins();
 
     if (ins.get_gyro_health(0) && ins.get_gyro_health(1)) {
         // dual gyro mode - average first two gyros
@@ -268,6 +276,7 @@ Vector3f SoloGimbal::get_ang_vel_dem_yaw(const Quaternion &quatEst)
     float dt = _measurement.delta_time;
     float alpha = dt/(dt+tc);
 
+    const AP_AHRS_NavEKF &_ahrs = AP::ahrs_navekf();
     Matrix3f Tve = _ahrs.get_rotation_body_to_ned();
     Matrix3f Teg;
     quatEst.inverse().rotation_matrix(Teg);
@@ -358,12 +367,13 @@ Vector3f SoloGimbal::get_ang_vel_dem_body_lock()
     joint_rates_to_gimbal_ang_vel(gimbalRateDemVecBodyLock, gimbalRateDemVecBodyLock);
 
     // Add a feedforward term from vehicle gyros
+    const AP_AHRS_NavEKF &_ahrs = AP::ahrs_navekf();
     gimbalRateDemVecBodyLock += Tvg * _ahrs.get_gyro();
 
     return gimbalRateDemVecBodyLock;
 }
 
-void SoloGimbal::update_target(Vector3f newTarget)
+void SoloGimbal::update_target(const Vector3f &newTarget)
 {
     // Low-pass filter
     _att_target_euler_rad.y = _att_target_euler_rad.y + 0.02f*(newTarget.y - _att_target_euler_rad.y);
@@ -371,9 +381,12 @@ void SoloGimbal::update_target(Vector3f newTarget)
     _att_target_euler_rad.y = constrain_float(_att_target_euler_rad.y,radians(-90),radians(0));
 }
 
-void SoloGimbal::write_logs(DataFlash_Class* dataflash)
+void SoloGimbal::write_logs()
 {
-    if (dataflash == nullptr) return;
+    AP_Logger *dataflash = AP_Logger::get_singleton();
+    if (dataflash == nullptr) {
+        return;
+    }
 
     uint32_t tstamp = AP_HAL::millis();
     Vector3f eulerEst;

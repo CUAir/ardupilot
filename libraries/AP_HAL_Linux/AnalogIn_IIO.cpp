@@ -1,6 +1,7 @@
 #include "AnalogIn_IIO.h"
 
 #include <AP_HAL/AP_HAL.h>
+#include <AP_Common/Semaphore.h>
 
 extern const AP_HAL::HAL &hal;
 
@@ -50,14 +51,16 @@ void AnalogSource_IIO::select_pin(void)
 float AnalogSource_IIO::read_average()
 {
     read_latest();
+    WITH_SEMAPHORE(_semaphore);
+
     if (_sum_count == 0) {
         return _value;
     }
-    hal.scheduler->suspend_timer_procs();
+
     _value = _sum_value / _sum_count;
     _sum_value = 0;
     _sum_count = 0;
-    hal.scheduler->resume_timer_procs();
+
     return _value;
 }
 
@@ -75,6 +78,8 @@ float AnalogSource_IIO::read_latest()
         _latest = 0;
         return 0;
     }
+    WITH_SEMAPHORE(_semaphore);
+
     _latest = atoi(sbuf) * _voltage_scaling;
     _sum_value += _latest;
     _sum_count++;
@@ -100,14 +105,14 @@ void AnalogSource_IIO::set_pin(uint8_t pin)
         return;
     }
 
-    hal.scheduler->suspend_timer_procs();
+    WITH_SEMAPHORE(_semaphore);
+
     _pin = pin;
     _sum_value = 0;
     _sum_count = 0;
     _latest = 0;
     _value = 0;
     select_pin();
-    hal.scheduler->resume_timer_procs();
 }
 
 void AnalogSource_IIO::set_stop_pin(uint8_t p)

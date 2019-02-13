@@ -28,6 +28,24 @@ class VehicleInfo(object):
                 # param fetch happens asynchronously
                 "extra_mavlink_cmds": "param fetch frame; param set FRAME 1;",
             },
+            "bfx": {
+                "make_target": "sitl",
+                "waf_target": "bin/arducopter",
+                "default_params_filename": ["default_params/copter.parm",
+                                            "default_params/copter-bfx.parm" ],
+            },
+            "djix": {
+                "make_target": "sitl",
+                "waf_target": "bin/arducopter",
+                "default_params_filename": ["default_params/copter.parm",
+                                            "default_params/copter-djix.parm" ],
+            },
+            "cwx": {
+                "make_target": "sitl",
+                "waf_target": "bin/arducopter",
+                "default_params_filename": ["default_params/copter.parm",
+                                            "default_params/copter-cwx.parm" ],
+            },
             "hexa": {
                 "make_target": "sitl",
                 "waf_target": "bin/arducopter",
@@ -57,10 +75,6 @@ class VehicleInfo(object):
                 "waf_target": "bin/arducopter",
                 "default_params_filename": ["default_params/copter.parm",
                                             "default_params/copter-y6.parm" ],
-            },
-            "firefly": {
-                "waf_target": "bin/arduplane",
-                "default_params_filename": "default_params/firefly.parm",
             },
             "dodeca-hexa": {
                 "make_target": "sitl",
@@ -111,7 +125,7 @@ class VehicleInfo(object):
         },
     },
     "ArduPlane": {
-        "default_frame": "jsbsim",
+        "default_frame": "plane",
         "frames": {
             # PLANE
             "quadplane-tilttri": {
@@ -123,6 +137,11 @@ class VehicleInfo(object):
                 "make_target": "sitl",
                 "waf_target": "bin/arduplane",
                 "default_params_filename": "default_params/quadplane-tilttrivec.parm",
+            },
+            "quadplane-tilthvec": {
+                "make_target": "sitl",
+                "waf_target": "bin/arduplane",
+                "default_params_filename": ["default_params/plane.parm", "default_params/quadplane-tilthvec.parm"],
             },
             "quadplane-tri": {
                 "make_target": "sitl",
@@ -137,6 +156,10 @@ class VehicleInfo(object):
             "quadplane": {
                 "waf_target": "bin/arduplane",
                 "default_params_filename": "default_params/quadplane.parm",
+            },
+            "firefly": {
+                "waf_target": "bin/arduplane",
+                "default_params_filename": "default_params/firefly.parm",
             },
             "plane-elevon": {
                 "waf_target": "bin/arduplane",
@@ -190,6 +213,17 @@ class VehicleInfo(object):
                 "default_params_filename": ["default_params/rover.parm",
                                             "default_params/rover-skid.parm"],
             },
+            "balancebot": {
+                "waf_target": "bin/ardurover",
+                "default_params_filename": ["default_params/rover.parm",
+                                            "default_params/rover-skid.parm",
+                                            "default_params/balancebot.parm"],
+            },
+            "sailboat": {
+                "waf_target": "bin/ardurover",
+                "default_params_filename": ["default_params/rover.parm",
+                                            "default_params/sailboat.parm"],
+            },
             "gazebo-rover": {
                 "waf_target": "bin/ardurover",
                 "default_params_filename": ["default_params/rover.parm",
@@ -204,6 +238,10 @@ class VehicleInfo(object):
         "default_frame": "vectored",
         "frames": {
             "vectored": {
+                "waf_target": "bin/ardusub",
+                "default_params_filename": "default_params/sub.parm",
+            },
+            "gazebo-bluerov2": {
                 "waf_target": "bin/ardusub",
                 "default_params_filename": "default_params/sub.parm",
             },

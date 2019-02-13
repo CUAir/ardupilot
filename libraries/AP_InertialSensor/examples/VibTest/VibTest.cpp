@@ -7,13 +7,12 @@
 #include <AP_HAL/AP_HAL.h>
 #include <AP_Math/AP_Math.h>
 #include <AP_Param/AP_Param.h>
-#include <AP_ADC/AP_ADC.h>
 #include <AP_InertialSensor/AP_InertialSensor.h>
 #include <AP_Notify/AP_Notify.h>
 #include <AP_GPS/AP_GPS.h>
 #include <AP_Baro/AP_Baro.h>
 #include <Filter/Filter.h>
-#include <DataFlash/DataFlash.h>
+#include <AP_Logger/AP_Logger.h>
 #include <GCS_MAVLink/GCS_MAVLink.h>
 #include <AP_Mission/AP_Mission.h>
 #include <StorageManager/StorageManager.h>
@@ -27,7 +26,6 @@
 #include <AP_Notify/AP_Notify.h>
 #include <AP_BattMonitor/AP_BattMonitor.h>
 #include <AP_RangeFinder/AP_RangeFinder.h>
-#include <AP_Rally/AP_Rally.h>
 
 #if CONFIG_HAL_BOARD == HAL_BOARD_PX4
 
@@ -51,7 +49,7 @@ static uint32_t accel_deltat_min[INS_MAX_INSTANCES];
 static uint32_t accel_deltat_max[INS_MAX_INSTANCES];
 static uint32_t gyro_deltat_min[INS_MAX_INSTANCES];
 static uint32_t gyro_deltat_max[INS_MAX_INSTANCES];
-static DataFlash_File DataFlash("/fs/microsd/VIBTEST");
+static AP_Logger_File AP_Logger("/fs/microsd/VIBTEST");
 
 static const struct LogStructure log_structure[] = {
     LOG_COMMON_STRUCTURES,
@@ -98,8 +96,8 @@ void setup(void)
     ioctl(accel_fd[1], ACCELIOCSSAMPLERATE, 1600);
     ioctl(accel_fd[1], SENSORIOCSQUEUEDEPTH, 100);
 
-    DataFlash.Init(log_structure, ARRAY_SIZE(log_structure));
-    DataFlash.StartNewLog();
+    logger.Init(log_structure, ARRAY_SIZE(log_structure));
+    logger.StartNewLog();
 }
 
 void loop(void)
@@ -132,7 +130,7 @@ void loop(void)
                     AccY      : accel_report.y,
                     AccZ      : accel_report.z
                 };
-                DataFlash.WriteBlock(&pkt, sizeof(pkt));
+                logger.WriteBlock(&pkt, sizeof(pkt));
                 got_sample = true;
                 total_samples[i]++;
             }
@@ -156,7 +154,7 @@ void loop(void)
                     GyrY      : gyro_report.y,
                     GyrZ      : gyro_report.z
                 };
-                DataFlash.WriteBlock(&pkt, sizeof(pkt));
+                logger.WriteBlock(&pkt, sizeof(pkt));
                 got_sample = true;
                 total_samples[i]++;
             }

@@ -23,7 +23,7 @@
 
 #define EK3_DISABLE_INTERRUPTS 0
 
-
+#include <AP_Common/Location.h>
 #include <AP_Math/AP_Math.h>
 #include "AP_NavEKF3.h"
 #include <AP_Math/vectorN.h>
@@ -46,10 +46,6 @@
 #define HGT_SOURCE_BCN  3
 
 #define earthRate 0.000072921f // earth rotation rate (rad/sec)
-
-// when the wind estimation first starts with no airspeed sensor,
-// assume 3m/s to start
-#define STARTUP_WIND_SPEED 3.0f
 
 // maximum allowed gyro bias (rad/sec)
 #define GYRO_BIAS_LIMIT 0.5f
@@ -206,7 +202,7 @@ public:
     // The sign convention is that a RH physical rotation of the sensor about an axis produces both a positive flow and gyro rate
     // msecFlowMeas is the scheduler time in msec when the optical flow data was received from the sensor.
     // posOffset is the XYZ flow sensor position in the body frame in m
-    void writeOptFlowMeas(uint8_t &rawFlowQuality, Vector2f &rawFlowRates, Vector2f &rawGyroRates, uint32_t &msecFlowMeas, const Vector3f &posOffset);
+    void writeOptFlowMeas(const uint8_t rawFlowQuality, const Vector2f &rawFlowRates, const Vector2f &rawGyroRates, const uint32_t msecFlowMeas, const Vector3f &posOffset);
 
     // return data for debugging optical flow fusion
     void getFlowDebug(float &varFlow, float &gndOffset, float &flowInnovX, float &flowInnovY, float &auxInnov, float &HAGL, float &rngInnov, float &range, float &gndOffsetErr) const;
@@ -222,6 +218,17 @@ public:
      * posOffset is the XYZ body frame position of the camera focal point (m)
     */
     void writeBodyFrameOdom(float quality, const Vector3f &delPos, const Vector3f &delAng, float delTime, uint32_t timeStamp_ms, const Vector3f &posOffset);
+
+    /*
+     * Write odometry data from a wheel encoder. The axis of rotation is assumed to be parallel to the vehicle body axis
+     *
+     * delAng is the measured change in angular position from the previous measurement where a positive rotation is produced by forward motion of the vehicle (rad)
+     * delTime is the time interval for the measurement of delAng (sec)
+     * timeStamp_ms is the time when the rotation was last measured (msec)
+     * posOffset is the XYZ body frame position of the wheel hub (m)
+     * radius is the effective rolling radius of the wheel (m)
+    */
+    void writeWheelOdom(float delAng, float delTime, uint32_t timeStamp_ms, const Vector3f &posOffset, float radius);
 
     /*
      * Return data for debugging body frame odometry fusion:
@@ -408,7 +415,6 @@ private:
     // the states are available in two forms, either as a Vector24, or
     // broken down as individual elements. Both are equivalent (same
     // memory)
-    Vector24 statesArray;
     struct state_elements {
         Quaternion  quat;           // quaternion defining rotation from local NED earth frame to body frame
         Vector3f    velocity;       // velocity of IMU in local NED earth frame (m/sec)
@@ -418,7 +424,12 @@ private:
         Vector3f    earth_magfield; // earth frame magnetic field vector (Gauss)
         Vector3f    body_magfield;  // body frame magnetic field vector (Gauss)
         Vector2f    wind_vel;       // horizontal North East wind velocity vector in local NED earth frame (m/sec)
-    } &stateStruct;
+    };
+
+    union {
+        Vector24 statesArray;
+        struct state_elements stateStruct;
+    };
 
     struct output_elements {
         Quaternion  quat;           // quaternion defining rotation from local NED earth frame to body frame
@@ -479,11 +490,19 @@ private:
         const Vector3f *body_offset;// pointer to XYZ position of the optical flow sensor in body frame (m)
     };
 
-    struct bfodm_elements {
+    struct vel_odm_elements {
         Vector3f        vel;        // XYZ velocity measured in body frame (m/s)
         float           velErr;     // velocity measurement error 1-std (m/s)
         const Vector3f *body_offset;// pointer to XYZ position of the velocity sensor in body frame (m)
         Vector3f        angRate;    // angular rate estimated from odometry (rad/sec)
+        uint32_t        time_ms;    // measurement timestamp (msec)
+    };
+
+    struct wheel_odm_elements {
+        float           delAng;     // wheel rotation angle measured in body frame - positive is forward movement of vehicle (rad/s)
+        float           radius;     // wheel radius (m)
+        const Vector3f *hub_offset; // pointer to XYZ position of the wheel hub in body frame (m)
+        float           delTime;    // time interval that the measurement was accumulated over (sec)
         uint32_t        time_ms;    // measurement timestamp (msec)
     };
 
@@ -542,7 +561,7 @@ private:
     void StoreQuatReset(void);
 
     // Rotate the stored output quaternion history through a quaternion rotation
-    void StoreQuatRotate(Quaternion deltaQuat);
+    void StoreQuatRotate(const Quaternion &deltaQuat);
 
     // store altimeter data
     void StoreBaro();
@@ -638,6 +657,9 @@ private:
 
     // zero stored variables
     void InitialiseVariables();
+
+    // zero stored variables related to mag
+    void InitialiseVariablesMag();
 
     // reset the horizontal position states uing the last GPS measurement
     void ResetPosition(void);
@@ -768,7 +790,7 @@ private:
     Vector3f calcRotVecVariances(void);
     
     // initialise the quaternion covariances using rotation vector variances
-    void initialiseQuatCovariances(Vector3f &rotVarVec);
+    void initialiseQuatCovariances(const Vector3f &rotVarVec);
 
     // update timing statistics structure
     void updateTimingStatistics(void);
@@ -934,6 +956,7 @@ private:
     Vector3f delAngCorrected;       // corrected IMU delta angle vector at the EKF time horizon (rad)
     Vector3f delVelCorrected;       // corrected IMU delta velocity vector at the EKF time horizon (m/s)
     bool magFieldLearned;           // true when the magnetic field has been learned
+    uint32_t wasLearningCompass_ms; // time when we were last waiting for compass learn to complete
     Vector3f earthMagFieldVar;      // NED earth mag field variances for last learned field (mGauss^2)
     Vector3f bodyMagFieldVar;       // XYZ body mag field variances for last learned field (mGauss^2)
     bool delAngBiasLearned;         // true when the gyro bias has been learned
@@ -1047,10 +1070,9 @@ private:
     uint32_t terrainHgtStableSet_ms;        // system time at which terrainHgtStable was set
 
     // body frame odometry fusion
-    obs_ring_buffer_t<bfodm_elements> storedBodyOdm;    // body velocity data buffer
-    bfodm_elements bodyOdmDataNew;       // Body frame odometry data at the current time horizon
-    bfodm_elements bodyOdmDataDelayed;  // Body  frame odometry data at the fusion time horizon
-    uint8_t bodyOdmStoreIndex;          // Body  frame odometry  data storage index
+    obs_ring_buffer_t<vel_odm_elements> storedBodyOdm;    // body velocity data buffer
+    vel_odm_elements bodyOdmDataNew;       // Body frame odometry data at the current time horizon
+    vel_odm_elements bodyOdmDataDelayed;  // Body  frame odometry data at the fusion time horizon
     uint32_t lastbodyVelPassTime_ms;    // time stamp when the body velocity measurement last passed innovation consistency checks (msec)
     Vector3 bodyVelTestRatio;           // Innovation test ratios for body velocity XYZ measurements
     Vector3 varInnovBodyVel;            // Body velocity XYZ innovation variances (rad/sec)^2
@@ -1059,6 +1081,13 @@ private:
     uint32_t bodyOdmMeasTime_ms;        // time body velocity measurements were accepted for input to the data buffer (msec)
     bool bodyVelFusionDelayed;          // true when body frame velocity fusion has been delayed
     bool bodyVelFusionActive;           // true when body frame velocity fusion is active
+
+    // wheel sensor fusion
+    uint32_t wheelOdmMeasTime_ms;       // time wheel odometry measurements were accepted for input to the data buffer (msec)
+    bool usingWheelSensors;             // true when the body frame velocity fusion method should take onbservation data from the wheel odometry buffer
+    obs_ring_buffer_t<wheel_odm_elements> storedWheelOdm;    // body velocity data buffer
+    wheel_odm_elements wheelOdmDataNew;       // Body frame odometry data at the current time horizon
+    wheel_odm_elements wheelOdmDataDelayed;   // Body  frame odometry data at the fusion time horizon
 
 
     // Range Beacon Sensor Fusion

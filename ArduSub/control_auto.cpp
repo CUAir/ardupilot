@@ -89,7 +89,7 @@ void Sub::auto_wp_start(const Vector3f& destination)
 }
 
 // auto_wp_start - initialises waypoint controller to implement flying to a particular destination
-void Sub::auto_wp_start(const Location_Class& dest_loc)
+void Sub::auto_wp_start(const Location& dest_loc)
 {
     auto_mode = Auto_WP;
 
@@ -117,7 +117,7 @@ void Sub::auto_wp_run()
         //    (of course it would be better if people just used take-off)
         // call attitude controller
         // Sub vehicles do not stabilize roll/pitch/yaw when disarmed
-        motors.set_desired_spool_state(AP_Motors::DESIRED_SPIN_WHEN_ARMED);
+        motors.set_desired_spool_state(AP_Motors::DESIRED_GROUND_IDLE);
         attitude_control.set_throttle_out_unstabilized(0,true,g.throttle_filt);
 
         return;
@@ -165,18 +165,18 @@ void Sub::auto_wp_run()
     // call attitude controller
     if (auto_yaw_mode == AUTO_YAW_HOLD) {
         // roll & pitch from waypoint controller, yaw rate from pilot
-        attitude_control.input_euler_angle_roll_pitch_euler_rate_yaw(target_roll, target_pitch, target_yaw_rate, get_smoothing_gain());
+        attitude_control.input_euler_angle_roll_pitch_euler_rate_yaw(target_roll, target_pitch, target_yaw_rate);
     } else {
         // roll, pitch from waypoint controller, yaw heading from auto_heading()
-        attitude_control.input_euler_angle_roll_pitch_yaw(target_roll, target_pitch, get_auto_heading(), true, get_smoothing_gain());
+        attitude_control.input_euler_angle_roll_pitch_yaw(target_roll, target_pitch, get_auto_heading(), true);
     }
 }
 
 // auto_spline_start - initialises waypoint controller to implement flying to a particular destination using the spline controller
 //  seg_end_type can be SEGMENT_END_STOP, SEGMENT_END_STRAIGHT or SEGMENT_END_SPLINE.  If Straight or Spline the next_destination should be provided
-void Sub::auto_spline_start(const Location_Class& destination, bool stopped_at_start,
+void Sub::auto_spline_start(const Location& destination, bool stopped_at_start,
                             AC_WPNav::spline_segment_end_type seg_end_type,
-                            const Location_Class& next_destination)
+                            const Location& next_destination)
 {
     auto_mode = Auto_Spline;
 
@@ -204,7 +204,7 @@ void Sub::auto_spline_run()
         //    (of course it would be better if people just used take-off)
         // Sub vehicles do not stabilize roll/pitch/yaw when disarmed
         attitude_control.set_throttle_out_unstabilized(0,true,g.throttle_filt);
-        motors.set_desired_spool_state(AP_Motors::DESIRED_SPIN_WHEN_ARMED);
+        motors.set_desired_spool_state(AP_Motors::DESIRED_GROUND_IDLE);
 
         return;
     }
@@ -242,17 +242,17 @@ void Sub::auto_spline_run()
     // call attitude controller
     if (auto_yaw_mode == AUTO_YAW_HOLD) {
         // roll & pitch from waypoint controller, yaw rate from pilot
-        attitude_control.input_euler_angle_roll_pitch_euler_rate_yaw(target_roll, target_pitch, target_yaw_rate, get_smoothing_gain());
+        attitude_control.input_euler_angle_roll_pitch_euler_rate_yaw(target_roll, target_pitch, target_yaw_rate);
     } else {
         // roll, pitch from waypoint controller, yaw heading from auto_heading()
-        attitude_control.input_euler_angle_roll_pitch_yaw(target_roll, target_pitch, get_auto_heading(), true, get_smoothing_gain());
+        attitude_control.input_euler_angle_roll_pitch_yaw(target_roll, target_pitch, get_auto_heading(), true);
     }
 }
 
 // auto_circle_movetoedge_start - initialise waypoint controller to move to edge of a circle with it's center at the specified location
 //  we assume the caller has set the circle's circle with circle_nav.set_center()
 //  we assume the caller has performed all required GPS_ok checks
-void Sub::auto_circle_movetoedge_start(const Location_Class &circle_center, float radius_m)
+void Sub::auto_circle_movetoedge_start(const Location &circle_center, float radius_m)
 {
     // convert location to vector from ekf origin
     Vector3f circle_center_neu;
@@ -278,8 +278,8 @@ void Sub::auto_circle_movetoedge_start(const Location_Class &circle_center, floa
         // set the state to move to the edge of the circle
         auto_mode = Auto_CircleMoveToEdge;
 
-        // convert circle_edge_neu to Location_Class
-        Location_Class circle_edge(circle_edge_neu);
+        // convert circle_edge_neu to Location
+        Location circle_edge(circle_edge_neu);
 
         // convert altitude to same as command
         circle_edge.set_alt_cm(circle_center.alt, circle_center.get_alt_frame());
@@ -332,7 +332,7 @@ void Sub::auto_circle_run()
     pos_control.update_z_controller();
 
     // roll & pitch from waypoint controller, yaw rate from pilot
-    attitude_control.input_euler_angle_roll_pitch_yaw(channel_roll->get_control_in(), channel_pitch->get_control_in(), circle_nav.get_yaw(), true, get_smoothing_gain());
+    attitude_control.input_euler_angle_roll_pitch_yaw(channel_roll->get_control_in(), channel_pitch->get_control_in(), circle_nav.get_yaw(), true);
 }
 
 #if NAV_GUIDED == ENABLED
@@ -389,7 +389,7 @@ void Sub::auto_loiter_run()
 {
     // if not armed set throttle to zero and exit immediately
     if (!motors.armed()) {
-        motors.set_desired_spool_state(AP_Motors::DESIRED_SPIN_WHEN_ARMED);
+        motors.set_desired_spool_state(AP_Motors::DESIRED_GROUND_IDLE);
         // Sub vehicles do not stabilize roll/pitch/yaw when disarmed
         attitude_control.set_throttle_out_unstabilized(0,true,g.throttle_filt);
 
@@ -425,7 +425,7 @@ void Sub::auto_loiter_run()
     get_pilot_desired_lean_angles(channel_roll->get_control_in(), channel_pitch->get_control_in(), target_roll, target_pitch, aparm.angle_max);
 
     // roll & pitch from waypoint controller, yaw rate from pilot
-    attitude_control.input_euler_angle_roll_pitch_euler_rate_yaw(target_roll, target_pitch, target_yaw_rate, get_smoothing_gain());
+    attitude_control.input_euler_angle_roll_pitch_euler_rate_yaw(target_roll, target_pitch, target_yaw_rate);
 }
 
 // get_default_auto_yaw_mode - returns auto_yaw_mode based on WP_YAW_BEHAVIOR parameter
@@ -572,7 +572,7 @@ void Sub::set_auto_yaw_roi(const Location &roi_location)
 
 // get_auto_heading - returns target heading depending upon auto_yaw_mode
 // 100hz update rate
-float Sub::get_auto_heading(void)
+float Sub::get_auto_heading()
 {
     switch (auto_yaw_mode) {
 
@@ -599,10 +599,10 @@ float Sub::get_auto_heading(void)
     case AUTO_YAW_CORRECT_XTRACK: {
         // TODO return current yaw if not in appropriate mode
         // Bearing of current track (centidegrees)
-        float track_bearing = wp_nav.get_bearing_cd(wp_nav.get_wp_origin(), wp_nav.get_wp_destination());
+        float track_bearing = get_bearing_cd(wp_nav.get_wp_origin(), wp_nav.get_wp_destination());
 
         // Bearing from current position towards intermediate position target (centidegrees)
-        float desired_angle = wp_nav.get_loiter_bearing_to_target();
+        float desired_angle = pos_control.get_bearing_to_target();
 
         float angle_error = wrap_180_cd(desired_angle - track_bearing);
         float angle_limited = constrain_float(angle_error, -g.xtrack_angle_limit * 100.0f, g.xtrack_angle_limit * 100.0f);
@@ -646,14 +646,15 @@ bool Sub::auto_terrain_recover_start()
     mission.stop();
 
     // Reset xy target
-    wp_nav.init_loiter_target();
+    loiter_nav.clear_pilot_desired_acceleration();
+    loiter_nav.init_target();
 
     // Reset z axis controller
     pos_control.relax_alt_hold_controllers(motors.get_throttle_hover());
 
     // initialize vertical speeds and leash lengths
-    pos_control.set_speed_z(wp_nav.get_speed_down(), wp_nav.get_speed_up());
-    pos_control.set_accel_z(wp_nav.get_accel_z());
+    pos_control.set_max_speed_z(wp_nav.get_default_speed_down(), wp_nav.get_default_speed_up());
+    pos_control.set_max_accel_z(wp_nav.get_accel_z());
 
     // Reset vertical position and velocity targets
     pos_control.set_alt_target(inertial_nav.get_altitude());
@@ -673,7 +674,7 @@ void Sub::auto_terrain_recover_run()
 
     // if not armed set throttle to zero and exit immediately
     if (!motors.armed()) {
-        motors.set_desired_spool_state(AP_Motors::DESIRED_SPIN_WHEN_ARMED);
+        motors.set_desired_spool_state(AP_Motors::DESIRED_GROUND_IDLE);
         attitude_control.set_throttle_out_unstabilized(0,true,g.throttle_filt);
         return;
     }
@@ -681,12 +682,12 @@ void Sub::auto_terrain_recover_run()
     switch (rangefinder.status_orient(ROTATION_PITCH_270)) {
 
     case RangeFinder::RangeFinder_OutOfRangeLow:
-        target_climb_rate = wp_nav.get_speed_up();
+        target_climb_rate = wp_nav.get_default_speed_up();
         rangefinder_recovery_ms = 0;
         break;
 
     case RangeFinder::RangeFinder_OutOfRangeHigh:
-        target_climb_rate = wp_nav.get_speed_down();
+        target_climb_rate = wp_nav.get_default_speed_down();
         rangefinder_recovery_ms = 0;
         break;
 
@@ -733,7 +734,7 @@ void Sub::auto_terrain_recover_run()
     }
 
     // run loiter controller
-    wp_nav.update_loiter(ekfGndSpdLimit, ekfNavVelGainScaler);
+    loiter_nav.update();
 
     ///////////////////////
     // update xy targets //
@@ -761,5 +762,5 @@ void Sub::auto_terrain_recover_run()
     float target_yaw_rate = 0;
 
     // call attitude controller
-    attitude_control.input_euler_angle_roll_pitch_euler_rate_yaw(target_roll, target_pitch, target_yaw_rate, get_smoothing_gain());
+    attitude_control.input_euler_angle_roll_pitch_euler_rate_yaw(target_roll, target_pitch, target_yaw_rate);
 }

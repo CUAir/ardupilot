@@ -16,7 +16,7 @@ const AP_Param::GroupInfo AP_TECS::var_info[] = {
 
     // @Param: CLMB_MAX
     // @DisplayName: Maximum Climb Rate (metres/sec)
-    // @Description: This is the best climb rate that the aircraft can achieve with the throttle set to THR_MAX and the airspeed set to the default value. For electric aircraft make sure this number can be achieved towards the end of flight when the battery voltage has reduced. The setting of this parameter can be checked by commanding a positive altitude change of 100m in loiter, RTL or guided mode. If the throttle required to climb is close to THR_MAX and the aircraft is maintaining airspeed, then this parameter is set correctly. If the airspeed starts to reduce, then the parameter is set to high, and if the throttle demand require to climb and maintain speed is noticeably less than THR_MAX, then either CLMB_MAX should be increased or THR_MAX reduced.
+    // @Description: Maximum demanded climb rate. Do not set higher than the climb speed at THR_MAX at TRIM_ARSPD_CM when the battery is at low voltage. Reduce value if airspeed cannot be maintained on ascent. Increase value if throttle does not increase significantly to ascend.
     // @Increment: 0.1
     // @Range: 0.1 20.0
     // @User: Standard
@@ -24,7 +24,7 @@ const AP_Param::GroupInfo AP_TECS::var_info[] = {
 
     // @Param: SINK_MIN
     // @DisplayName: Minimum Sink Rate (metres/sec)
-    // @Description: This is the sink rate of the aircraft with the throttle set to THR_MIN and the same airspeed as used to measure CLMB_MAX.
+    // @Description: Minimum sink rate when at THR_MIN and TRIM_ARSPD_CM.
     // @Increment: 0.1
     // @Range: 0.1 10.0
     // @User: Standard
@@ -32,7 +32,7 @@ const AP_Param::GroupInfo AP_TECS::var_info[] = {
 
     // @Param: TIME_CONST
     // @DisplayName: Controller time constant (sec)
-    // @Description: This is the time constant of the TECS control algorithm. Smaller values make it faster to respond, large values make it slower to respond.
+    // @Description: Time constant of the TECS control algorithm. Small values make faster altitude corrections but can cause overshoot and aggressive behavior.
     // @Range: 3.0 10.0
     // @Increment: 0.2
     // @User: Advanced
@@ -40,7 +40,7 @@ const AP_Param::GroupInfo AP_TECS::var_info[] = {
 
     // @Param: THR_DAMP
     // @DisplayName: Controller throttle damping
-    // @Description: This is the damping gain for the throttle demand loop. Increase to add damping  to correct for oscillations in speed and height.
+    // @Description: Damping gain for throttle demand loop. Slows the throttle response to correct for speed and height oscillations.
     // @Range: 0.1 1.0
     // @Increment: 0.1
     // @User: Advanced
@@ -48,7 +48,7 @@ const AP_Param::GroupInfo AP_TECS::var_info[] = {
 
     // @Param: INTEG_GAIN
     // @DisplayName: Controller integrator
-    // @Description: This is the integrator gain on the control loop. Increase to increase the rate at which speed and height offsets are trimmed out
+    // @Description: Integrator gain to trim out long-term speed and height errors.
     // @Range: 0.0 0.5
     // @Increment: 0.02
     // @User: Advanced
@@ -56,7 +56,7 @@ const AP_Param::GroupInfo AP_TECS::var_info[] = {
 
     // @Param: VERT_ACC
     // @DisplayName: Vertical Acceleration Limit (metres/sec^2)
-    // @Description: This is the maximum vertical acceleration either up or down that the  controller will use to correct speed or height errors.
+    // @Description: Maximum vertical acceleration used to correct speed or height errors.
     // @Range: 1.0 10.0
     // @Increment: 0.5
     // @User: Advanced
@@ -80,7 +80,7 @@ const AP_Param::GroupInfo AP_TECS::var_info[] = {
 
     // @Param: RLL2THR
     // @DisplayName: Bank angle compensation gain
-    // @Description: Increasing this gain turn increases the amount of throttle that will be used to compensate for the additional drag created by turning. Ideally this should be set to approximately 10 x the extra sink rate in m/s created by a 45 degree bank turn. Increase this gain if the aircraft initially loses energy in turns and reduce if the aircraft initially gains energy in turns. Efficient high aspect-ratio aircraft (eg powered sailplanes) can use a lower value, whereas inefficient low aspect-ratio models (eg delta wings) can use a higher value.
+    // @Description: Gain from bank angle to throttle to compensate for loss of airspeed from drag in turns. Set to approximately 10x the sink rate in m/s caused by a 45-degree turn. High efficiency models may need less while less efficient aircraft may need more. Should be tuned in an automatic mission with waypoints and turns greater than 90 degrees. Tune with PTCH2SV_RLL and KFF_RDDRMIX to achieve constant airspeed, constant altitude turns.
     // @Range: 5.0 30.0
     // @Increment: 1.0
     // @User: Advanced
@@ -88,7 +88,7 @@ const AP_Param::GroupInfo AP_TECS::var_info[] = {
 
     // @Param: SPDWEIGHT
     // @DisplayName: Weighting applied to speed control
-    // @Description: This parameter adjusts the amount of weighting that the pitch control applies to speed vs height errors. Setting it to 0.0 will cause the pitch control to control height and ignore speed errors. This will normally improve height accuracy but give larger airspeed errors. Setting it to 2.0 will cause the pitch control loop to control speed and ignore height errors. This will normally reduce airsped errors, but give larger height errors.	A value of 1.0 gives a balanced response and is the default.
+    // @Description: Mixing of pitch and throttle correction for height and airspeed errors. Pitch controls altitude and throttle controls airspeed if set to 0. Pitch controls airspeed and throttle controls altitude if set to 2 (good for gliders). Blended if set to 1.
     // @Range: 0.0 2.0
     // @Increment: 0.1
     // @User: Advanced
@@ -96,7 +96,7 @@ const AP_Param::GroupInfo AP_TECS::var_info[] = {
 
     // @Param: PTCH_DAMP
     // @DisplayName: Controller pitch damping
-    // @Description: This is the damping gain for the pitch demand loop. Increase to add damping  to correct for oscillations in speed and height.
+    // @Description: Damping gain for pitch control from TECS control.  Increasing may correct for oscillations in speed and height, but too much may cause additional oscillation and degraded control.
     // @Range: 0.1 1.0
     // @Increment: 0.1
     // @User: Advanced
@@ -104,7 +104,7 @@ const AP_Param::GroupInfo AP_TECS::var_info[] = {
 
     // @Param: SINK_MAX
     // @DisplayName: Maximum Descent Rate (metres/sec)
-    // @Description: This sets the maximum descent rate that the controller will use.  If this value is too large, the aircraft will reach the pitch angle limit first and be unable to achieve the descent rate. This should be set to a value that can be achieved at the lower pitch angle limit.
+    // @Description: Maximum demanded descent rate. Do not set higher than the vertical speed the aircraft can maintain at THR_MIN, TECS_PITCH_MIN, and ARSPD_FBW_MAX.
     // @Increment: 0.1
     // @Range: 0.0 20.0
     // @User: User
@@ -136,15 +136,15 @@ const AP_Param::GroupInfo AP_TECS::var_info[] = {
 
     // @Param: PITCH_MAX
     // @DisplayName: Maximum pitch in auto flight
-    // @Description: This controls maximum pitch up in automatic throttle modes. If this is set to zero then LIM_PITCH_MAX is used instead. The purpose of this parameter is to allow the use of a smaller pitch range when in automatic flight than what is used in FBWA mode.
+    // @Description: Overrides LIM_PITCH_MAX in automatic throttle modes to reduce climb rates. Uses LIM_PITCH_MAX if set to 0. For proper TECS tuning, set to the angle that the aircraft can climb at TRIM_ARSPD_CM and THR_MAX.
     // @Range: 0 45
     // @Increment: 1
     // @User: Advanced
-    AP_GROUPINFO("PITCH_MAX", 15, AP_TECS, _pitch_max, 0),
+    AP_GROUPINFO("PITCH_MAX", 15, AP_TECS, _pitch_max, 15),
 
     // @Param: PITCH_MIN
     // @DisplayName: Minimum pitch in auto flight
-    // @Description: This controls minimum pitch in automatic throttle modes. If this is set to zero then LIM_PITCH_MIN is used instead. The purpose of this parameter is to allow the use of a smaller pitch range when in automatic flight than what is used in FBWA mode. Note that TECS_PITCH_MIN should be a negative number.
+    // @Description: Overrides LIM_PITCH_MIN in automatic throttle modes to reduce descent rates. Uses LIM_PITCH_MIN if set to 0. For proper TECS tuning, set to the angle that the aircraft can descend at without overspeeding.
     // @Range: -45 0
     // @Increment: 1
     // @User: Advanced
@@ -296,7 +296,7 @@ void AP_TECS::update_50hz(void)
           use a complimentary filter to calculate climb_rate. This is
           designed to minimise lag
          */
-        float baro_alt = _ahrs.get_baro().get_altitude();
+        const float baro_alt = AP::baro().get_altitude();
         // Get height acceleration
         float hgt_ddot_mea = -(_ahrs.get_accel_ef().z + GRAVITY_MSS);
         // Perform filter calculation using backwards Euler integration
@@ -325,7 +325,7 @@ void AP_TECS::update_50hz(void)
     // Get DCM
     const Matrix3f &rotMat = _ahrs.get_rotation_body_to_ned();
     // Calculate speed rate of change
-    float temp = rotMat.c.x * GRAVITY_MSS + _ahrs.get_ins().get_accel().x;
+    float temp = rotMat.c.x * GRAVITY_MSS + AP::ins().get_accel().x;
     // take 5 point moving average
     _vel_dot = _vdot_filter.apply(temp);
 
@@ -589,6 +589,15 @@ void AP_TECS::_update_throttle_with_airspeed(void)
     float SPE_err_max = 0.5f * _TASmax * _TASmax - _SKE_dem;
     float SPE_err_min = 0.5f * _TASmin * _TASmin - _SKE_dem;
 
+    if (_flight_stage == AP_Vehicle::FixedWing::FLIGHT_VTOL) {
+        /*
+          when we are in a VTOL state then we ignore potential energy
+          errors as we have vertical motors that interfere with the
+          total energy calculation.
+         */
+        SPE_err_max = SPE_err_min = 0;
+    }
+    
     // Calculate total energy error
     _STE_error = constrain_float((_SPE_dem - _SPE_est), SPE_err_min, SPE_err_max) + _SKE_dem - _SKE_est;
     float STEdot_dem = constrain_float((_SPEdot_dem + _SKEdot_dem), _STEdot_min, _STEdot_max);
@@ -608,7 +617,8 @@ void AP_TECS::_update_throttle_with_airspeed(void)
     else
     {
         // Calculate gain scaler from specific energy error to throttle
-        float K_STE2Thr = 1 / (timeConstant() * (_STEdot_max - _STEdot_min));
+        // (_STEdot_max - _STEdot_min) / (_THRmaxf - _THRminf) is the derivative of STEdot wrt throttle measured across the max allowed throttle range.
+        float K_STE2Thr = 1 / (timeConstant() * (_STEdot_max - _STEdot_min) / (_THRmaxf - _THRminf));
 
         // Calculate feed-forward throttle
         float ff_throttle = 0;
@@ -751,11 +761,6 @@ void AP_TECS::_detect_bad_descent(void)
     {
         _flags.badDescent = false;
     }
-
-    // when soaring is active we never trigger a bad descent
-    if (_soaring_controller.is_active() && _soaring_controller.get_throttle_suppressed()) {
-        _flags.badDescent = false;        
-    }
 }
 
 void AP_TECS::_update_pitch(void)
@@ -769,6 +774,12 @@ void AP_TECS::_update_pitch(void)
     float SKE_weighting = constrain_float(_spdWeight, 0.0f, 2.0f);
     if (!_ahrs.airspeed_sensor_enabled()) {
         SKE_weighting = 0.0f;
+    } else if (_flight_stage == AP_Vehicle::FixedWing::FLIGHT_VTOL) {
+        // if we are in VTOL mode then control pitch without regard to
+        // speed. Speed is also taken care of independently of
+        // height. This is needed as the usual relationship of speed
+        // and height is broken by the VTOL motors
+        SKE_weighting = 0.0f;        
     } else if ( _flags.underspeed || _flight_stage == AP_Vehicle::FixedWing::FLIGHT_TAKEOFF || _flight_stage == AP_Vehicle::FixedWing::FLIGHT_ABORT_LAND) {
         SKE_weighting = 2.0f;
     } else if (_flags.is_doing_auto_land) {
@@ -930,7 +941,8 @@ void AP_TECS::update_pitch_throttle(int32_t hgt_dem_cm,
                                     int32_t ptchMinCO_cd,
                                     int16_t throttle_nudge,
                                     float hgt_afe,
-                                    float load_factor)
+                                    float load_factor,
+                                    bool soaring_active)
 {
     // Calculate time in seconds since last update
     uint64_t now = AP_HAL::micros64();
@@ -1056,27 +1068,37 @@ void AP_TECS::update_pitch_throttle(int32_t hgt_dem_cm,
     // Detect bad descent due to demanded airspeed being too high
     _detect_bad_descent();
 
+    // when soaring is active we never trigger a bad descent
+    if (soaring_active) {
+        _flags.badDescent = false;        
+    }
+
     // Calculate pitch demand
     _update_pitch();
 
-    // log to DataFlash
-    DataFlash_Class::instance()->Log_Write("TECS", "TimeUS,h,dh,hdem,dhdem,spdem,sp,dsp,ith,iph,th,ph,dspdem,w,f", "QfffffffffffffB",
-                                           now,
-                                           (double)_height,
-                                           (double)_climb_rate,
-                                           (double)_hgt_dem_adj,
-                                           (double)_hgt_rate_dem,
-                                           (double)_TAS_dem_adj,
-                                           (double)_TAS_state,
-                                           (double)_vel_dot,
-                                           (double)_integTHR_state,
-                                           (double)_integSEB_state,
-                                           (double)_throttle_dem,
-                                           (double)_pitch_dem,
-                                           (double)_TAS_rate_dem,
-                                           (double)logging.SKE_weighting,
-                                           _flags_byte);
-    DataFlash_Class::instance()->Log_Write("TEC2", "TimeUS,KErr,PErr,EDelta,LF", "Qffff",
+    // log to AP_Logger
+    AP::logger().Write(
+        "TECS",
+        "TimeUS,h,dh,hdem,dhdem,spdem,sp,dsp,ith,iph,th,ph,dspdem,w,f",
+        "smnmnnnn----o--",
+        "F0000000----0--",
+        "QfffffffffffffB",
+        now,
+        (double)_height,
+        (double)_climb_rate,
+        (double)_hgt_dem_adj,
+        (double)_hgt_rate_dem,
+        (double)_TAS_dem_adj,
+        (double)_TAS_state,
+        (double)_vel_dot,
+        (double)_integTHR_state,
+        (double)_integSEB_state,
+        (double)_throttle_dem,
+        (double)_pitch_dem,
+        (double)_TAS_rate_dem,
+        (double)logging.SKE_weighting,
+        _flags_byte);
+    AP::logger().Write("TEC2", "TimeUS,KErr,PErr,EDelta,LF", "Qffff",
                                            now,
                                            (double)logging.SKE_error,
                                            (double)logging.SPE_error,

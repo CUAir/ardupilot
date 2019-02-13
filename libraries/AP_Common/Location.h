@@ -14,9 +14,20 @@
 class AP_AHRS_NavEKF;
 class AP_Terrain;
 
-class Location_Class : public Location
+class Location
 {
 public:
+
+    uint8_t relative_alt : 1;           // 1 if altitude is relative to home
+    uint8_t loiter_ccw   : 1;           // 0 if clockwise, 1 if counter clockwise
+    uint8_t terrain_alt  : 1;           // this altitude is above terrain
+    uint8_t origin_alt   : 1;           // this altitude is above ekf origin
+    uint8_t loiter_xtrack : 1;          // 0 to crosstrack from center of waypoint, 1 to crosstrack from tangent exit location
+
+    // note that mission storage only stores 24 bits of altitude (~ +/- 83km)
+    int32_t alt;
+    int32_t lat;
+    int32_t lng;
 
     /// enumeration of possible altitude types
     enum ALT_FRAME {
@@ -27,17 +38,11 @@ public:
     };
 
     /// constructors
-    Location_Class();
-    Location_Class(int32_t latitude, int32_t longitude, int32_t alt_in_cm, ALT_FRAME frame);
-    Location_Class(const Location& loc);
-    Location_Class(const Vector3f &ekf_offset_neu);
+    Location();
+    Location(int32_t latitude, int32_t longitude, int32_t alt_in_cm, ALT_FRAME frame);
+    Location(const Vector3f &ekf_offset_neu);
 
-    /// accept reference to ahrs and (indirectly) EKF
-    static void set_ahrs(const AP_AHRS_NavEKF* ahrs) { _ahrs = ahrs; }
     static void set_terrain(AP_Terrain* terrain) { _terrain = terrain; }
-
-    // operators
-    Location_Class& operator=(const struct Location &loc);
 
     // set altitude
     void set_alt_cm(int32_t alt_cm, ALT_FRAME frame);
@@ -55,10 +60,11 @@ public:
     // the original frame or desired frame is above-terrain
     bool change_alt_frame(ALT_FRAME desired_frame);
 
-    // get position as a vector from home (x,y only or x,y,z)
+    // get position as a vector from origin (x,y only or x,y,z)
     // return false on failure to get the vector which can only
     // happen if the EKF origin has not been set yet
-    bool get_vector_xy_from_origin_NEU(Vector3f &vec_neu) const;
+    // x, y and z are in centimetres
+    bool get_vector_xy_from_origin_NE(Vector2f &vec_ne) const;
     bool get_vector_from_origin_NEU(Vector3f &vec_neu) const;
 
     // return distance in meters between two locations
@@ -67,12 +73,11 @@ public:
     // extrapolate latitude/longitude given distances (in meters) north and east
     void offset(float ofs_north, float ofs_east);
 
-    bool is_zero(void) { return (lat == 0 && lng == 0 && alt == 0 && options == 0); }
+    bool is_zero(void) const;
 
-    void zero(void) { lat = lng = alt = 0; options = 0; }
+    void zero(void);
 
 private:
-    static const AP_AHRS_NavEKF *_ahrs;
     static AP_Terrain *_terrain;
 };
 

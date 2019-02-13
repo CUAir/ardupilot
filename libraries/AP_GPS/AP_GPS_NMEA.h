@@ -58,7 +58,7 @@ public:
     /// Checks the serial receive buffer for characters,
     /// attempts to parse NMEA data and updates internal state
     /// accordingly.
-    bool        read();
+    bool        read() override;
 
 	static bool _detect(struct NMEA_detect_state &state, uint8_t data);
 
@@ -125,6 +125,7 @@ private:
     uint8_t _sentence_type;                                     ///< the sentence type currently being processed
     uint8_t _term_number;                                       ///< term index within the current sentence
     uint8_t _term_offset;                                       ///< character offset with the term being received
+    uint16_t _sentence_length;
     bool _gps_data_good;                                        ///< set when the sentence indicates data is good
 
     // The result of parsing terms within a message is stored temporarily until
@@ -139,6 +140,7 @@ private:
     int32_t _new_course;                                        ///< course parsed from a term
     uint16_t _new_hdop;                                                 ///< HDOP parsed from a term
     uint8_t _new_satellite_count;                       ///< satellite count parsed from a term
+    uint8_t _new_quality_indicator;                                     ///< GPS quality indicator parsed from a term
 
     uint32_t _last_RMC_ms = 0;
     uint32_t _last_GGA_ms = 0;

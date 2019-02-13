@@ -1,135 +1,183 @@
-# fly ArduPlane QuadPlane in SITL
+#!/usr/bin/env python
+
+# Fly ArduPlane QuadPlane in SITL
 from __future__ import print_function
 import os
 import pexpect
-import shutil
 from pymavlink import mavutil
 
-from common import *
+from common import AutoTest
 from pysim import util
+from pysim import vehicleinfo
 
 # get location of scripts
 testdir = os.path.dirname(os.path.realpath(__file__))
-
-
-HOME_LOCATION = '-27.274439,151.290064,343,8.7'
+HOME = mavutil.location(-27.274439, 151.290064, 343, 8.7)
 MISSION = 'ArduPlane-Missions/Dalby-OBC2016.txt'
 FENCE = 'ArduPlane-Missions/Dalby-OBC2016-fence.txt'
 WIND = "0,180,0.2"  # speed,direction,variance
 
-homeloc = None
 
+class AutoTestQuadPlane(AutoTest):
+    def __init__(self,
+                 binary,
+                 valgrind=False,
+                 gdb=False,
+                 speedup=10,
+                 frame=None,
+                 params=None,
+                 gdbserver=False,
+                 breakpoints=[],
+                 **kwargs):
+        super(AutoTestQuadPlane, self).__init__(**kwargs)
+        self.binary = binary
+        self.valgrind = valgrind
+        self.gdb = gdb
+        self.frame = frame
+        self.params = params
+        self.gdbserver = gdbserver
+        self.breakpoints = breakpoints
 
-def fly_mission(mavproxy, mav, filename, fence, height_accuracy=-1):
-    """Fly a mission from a file."""
-    print("Flying mission %s" % filename)
-    mavproxy.send('wp load %s\n' % filename)
-    mavproxy.expect('Flight plan received')
-    mavproxy.send('fence load %s\n' % fence)
-    mavproxy.send('wp list\n')
-    mavproxy.expect('Requesting [0-9]+ waypoints')
-    mavproxy.send('mode AUTO\n')
-    wait_mode(mav, 'AUTO')
-    if not wait_waypoint(mav, 1, 19, max_dist=60, timeout=1200):
-        return False
-    mavproxy.expect('DISARMED')
-    # wait for blood sample here
-    mavproxy.send('wp set 20\n')
-    mavproxy.send('arm throttle\n')
-    mavproxy.expect('ARMED')
-    if not wait_waypoint(mav, 20, 34, max_dist=60, timeout=1200):
-        return False
-    mavproxy.expect('DISARMED')
-    print("Mission OK")
-    return True
+        self.home = "%f,%f,%u,%u" % (HOME.lat,
+                                     HOME.lng,
+                                     HOME.alt,
+                                     HOME.heading)
+        self.homeloc = None
+        self.speedup = speedup
 
+        self.log_name = "QuadPlane"
+        self.logfile = None
 
-def fly_QuadPlane(binary, viewerip=None, use_map=False, valgrind=False, gdb=False):
-    """Fly QuadPlane in SITL.
+        self.sitl = None
 
-    you can pass viewerip as an IP address to optionally send fg and
-    mavproxy packets too for local viewing of the flight in real time.
-    """
-    global homeloc
+    def init(self):
+        if self.frame is None:
+            self.frame = 'quadplane'
 
-    options = '--sitl=127.0.0.1:5501 --out=127.0.0.1:19550 --streamrate=10'
-    if viewerip:
-        options += " --out=%s:14550" % viewerip
-    if use_map:
-        options += ' --map'
+        self.mavproxy_logfile = self.open_mavproxy_logfile()
 
-    sitl = util.start_SITL(binary, model='quadplane', wipe=True, home=HOME_LOCATION, speedup=10,
-                          defaults_file=os.path.join(testdir, 'default_params/quadplane.parm'), valgrind=valgrind, gdb=gdb)
-    mavproxy = util.start_MAVProxy_SITL('QuadPlane', options=options)
-    mavproxy.expect('Telemetry log: (\S+)')
-    logfile = mavproxy.match.group(1)
-    print("LOGFILE %s" % logfile)
+        vinfo = vehicleinfo.VehicleInfo()
+        defaults_file = vinfo.options["ArduPlane"]["frames"][self.frame]["default_params_filename"]
+        defaults_filepath = os.path.join(testdir, defaults_file)
 
-    buildlog = util.reltopdir("../buildlogs/QuadPlane-test.tlog")
-    print("buildlog=%s" % buildlog)
-    if os.path.exists(buildlog):
-        os.unlink(buildlog)
-    try:
-        os.link(logfile, buildlog)
-    except Exception:
-        pass
+        self.sitl = util.start_SITL(self.binary,
+                                    wipe=True,
+                                    model=self.frame,
+                                    home=self.home,
+                                    speedup=self.speedup,
+                                    defaults_file=defaults_filepath,
+                                    valgrind=self.valgrind,
+                                    gdb=self.gdb,
+                                    gdbserver=self.gdbserver,
+                                    breakpoints=self.breakpoints,
+                                    )
+        self.mavproxy = util.start_MAVProxy_SITL(
+            'QuadPlane', options=self.mavproxy_options())
+        self.mavproxy.expect('Telemetry log: (\S+)\r\n')
+        self.logfile = self.mavproxy.match.group(1)
+        self.progress("LOGFILE %s" % self.logfile)
+        self.try_symlink_tlog()
 
-    util.expect_setup_callback(mavproxy, expect_callback)
+        self.mavproxy.expect('Received [0-9]+ parameters')
 
-    mavproxy.expect('Received [0-9]+ parameters')
+        util.expect_setup_callback(self.mavproxy, self.expect_callback)
 
-    expect_list_clear()
-    expect_list_extend([sitl, mavproxy])
+        self.expect_list_clear()
+        self.expect_list_extend([self.sitl, self.mavproxy])
 
-    print("Started simulator")
+        self.progress("Started simulator")
 
-    # get a mavlink connection going
-    try:
-        mav = mavutil.mavlink_connection('127.0.0.1:19550', robust_parsing=True)
-    except Exception as msg:
-        print("Failed to start mavlink connection on 127.0.0.1:19550" % msg)
-        raise
-    mav.message_hooks.append(message_hook)
-    mav.idle_hooks.append(idle_hook)
+        self.get_mavlink_connection_going()
 
-    failed = False
-    e = 'None'
-    try:
-        print("Waiting for a heartbeat with mavlink protocol %s" % mav.WIRE_PROTOCOL_VERSION)
-        mav.wait_heartbeat()
-        print("Waiting for GPS fix")
-        mav.recv_match(condition='VFR_HUD.alt>10', blocking=True)
-        mav.wait_gps_fix()
-        while mav.location().alt < 10:
-            mav.wait_gps_fix()
-        homeloc = mav.location()
-        print("Home location: %s" % homeloc)
+        self.progress("Ready to start testing!")
 
-        # wait for EKF and GPS checks to pass
-        wait_seconds(mav, 30)
+    def is_plane(self):
+        return True
 
-        mavproxy.send('arm throttle\n')
-        mavproxy.expect('ARMED')
+    def get_rudder_channel(self):
+        return int(self.get_parameter("RCMAP_YAW"))
 
-        if not fly_mission(mavproxy, mav,
-                           os.path.join(testdir, "ArduPlane-Missions/Dalby-OBC2016.txt"),
-                           os.path.join(testdir, "ArduPlane-Missions/Dalby-OBC2016-fence.txt")):
-            print("Failed mission")
-            failed = True
-    except pexpect.TIMEOUT as e:
-        print("Failed with timeout")
-        failed = True
+    def get_disarm_delay(self):
+        return int(self.get_parameter("LAND_DISARMDELAY"))
 
-    mav.close()
-    util.pexpect_close(mavproxy)
-    util.pexpect_close(sitl)
+    def set_autodisarm_delay(self, delay):
+        self.set_parameter("LAND_DISARMDELAY", delay)
 
-    valgrind_log = util.valgrind_log_filepath(binary=binary, model='quadplane')
-    if os.path.exists(valgrind_log):
-        os.chmod(valgrind_log, 0o644)
-        shutil.copy(valgrind_log, util.reltopdir("../buildlogs/QuadPlane-valgrind.log"))
+    def fly_mission(self, filename, fence, height_accuracy=-1):
+        """Fly a mission from a file."""
+        self.progress("Flying mission %s" % filename)
+        self.load_mission(filename)
+        self.mavproxy.send('fence load %s\n' % fence)
+        self.mavproxy.send('wp list\n')
+        self.mavproxy.expect('Requesting [0-9]+ waypoints')
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.mavproxy.send('mode AUTO\n')
+        self.wait_mode('AUTO')
+        self.wait_waypoint(1, 19, max_dist=60, timeout=1200)
 
-    if failed:
-        print("FAILED: %s" % e)
-        return False
-    return True
+        self.mav.motors_disarmed_wait()
+        # wait for blood sample here
+        self.mavproxy.send('wp set 20\n')
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.wait_waypoint(20, 34, max_dist=60, timeout=1200)
+
+        self.mav.motors_disarmed_wait()
+        self.progress("Mission OK")
+
+    def fly_qautotune(self):
+        self.change_mode("QHOVER")
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.set_rc(3, 1800)
+        self.wait_altitude(30,
+                           40,
+                           relative=True,
+                           timeout=30)
+        self.set_rc(3, 1500)
+        self.change_mode("QAUTOTUNE")
+        tstart = self.get_sim_time()
+        sim_time_expected = 5000
+        deadline = tstart + sim_time_expected
+        while self.get_sim_time_cached() < deadline:
+            now = self.get_sim_time_cached()
+            m = self.mav.recv_match(type='STATUSTEXT',
+                                    blocking=True,
+                                    timeout=1)
+            if m is None:
+                continue
+            self.progress("STATUSTEXT (%u<%u): %s" % (now, deadline, m.text))
+            if "AutoTune: Success" in m.text:
+                self.progress("AUTOTUNE OK (%u seconds)" % (now - tstart))
+                # near enough for now:
+                self.change_mode("QLAND")
+                self.mavproxy.expect("AutoTune: Saved gains for Roll Pitch Yaw")
+                self.mav.motors_disarmed_wait()
+                return
+        self.mav.motors_disarmed_wait()
+
+    def default_mode(self):
+        return "FBWA"
+
+    def disabled_tests(self):
+        return {
+            "QAutoTune": "See https://github.com/ArduPilot/ardupilot/issues/10411",
+        }
+
+    def tests(self):
+        '''return list of all tests'''
+        m = os.path.join(testdir, "ArduPlane-Missions/Dalby-OBC2016.txt")
+        f = os.path.join(testdir,
+                         "ArduPlane-Missions/Dalby-OBC2016-fence.txt")
+
+        ret = super(AutoTestQuadPlane, self).tests()
+        ret.extend([
+            ("ArmFeatures", "Arm features", self.test_arm_feature),
+
+            ("QAutoTune", "Fly QAUTOTUNE mode", self.fly_qautotune),
+
+            ("Mission", "Dalby Mission",
+             lambda: self.fly_mission(m, f))
+        ])
+        return ret

@@ -1,34 +1,53 @@
 #include "mode.h"
 #include "Rover.h"
 
-void ModeSteering::update() {
-    /*
-        in steering mode we control lateral acceleration
-        directly. We first calculate the maximum lateral
-        acceleration at full steering lock for this speed. That is
-        V^2/R where R is the radius of turn. We get the radius of
-        turn from half the STEER2SRV_P.
-    */
-    const float ground_speed = rover.ground_speed;
-    float max_g_force = ground_speed * ground_speed / rover.steerController.get_turn_radius();
+void ModeSteering::update()
+{
+    // get speed forward
+    float speed;
+    if (!attitude_control.get_forward_speed(speed)) {
+        // no valid speed so stop
+        g2.motors.set_throttle(0.0f);
+        g2.motors.set_steering(0.0f);
+        return;
+    }
 
-    // constrain to user set TURN_MAX_G
-    max_g_force = constrain_float(max_g_force, 0.1f, g.turn_max_g * GRAVITY_MSS);
+    float desired_steering, desired_speed;
+    get_pilot_desired_steering_and_speed(desired_steering, desired_speed);
 
-    // convert pilot steering input to desired lateral acceleration
-    lateral_acceleration = max_g_force * (channel_steer->get_control_in() / 4500.0f);
+    bool reversed = is_negative(desired_speed);
 
-    // run steering controller
-    calc_nav_steer();
+    // determine if pilot is requesting pivot turn
+    if (g2.motors.have_skid_steering() && is_zero(desired_speed)) {
+        // pivot turning using turn rate controller
+        // convert pilot steering input to desired turn rate in radians/sec
+        const float target_turn_rate = (desired_steering / 4500.0f) * radians(g2.acro_turn_rate);
 
-    // convert pilot throttle input to desired speed
-    // speed in proportion to cruise speed, up to 50% throttle, then uses nudging above that.
-    float target_speed = channel_throttle->get_control_in() * 0.01f * 2.0f * g.speed_cruise;
-    target_speed = constrain_float(target_speed, -g.speed_cruise, g.speed_cruise);
+        // run steering turn rate controller and throttle controller
+        const float steering_out = attitude_control.get_steering_out_rate(target_turn_rate,
+                                                                          g2.motors.limit.steer_left,
+                                                                          g2.motors.limit.steer_right,
+                                                                          rover.G_Dt);
+        g2.motors.set_steering(steering_out * 4500.0f);
+    } else {
+        // In steering mode we control lateral acceleration directly.
+        // For regular steering vehicles we use the maximum lateral acceleration
+        //  at full steering lock for this speed: V^2/R where R is the radius of turn.
+        float max_g_force = speed * speed / MAX(g2.turn_radius, 0.1f);
+        max_g_force = constrain_float(max_g_force, 0.1f, g.turn_max_g * GRAVITY_MSS);
 
-    // mark us as in_reverse when using a negative throttle to stop AHRS getting off
-    rover.set_reverse(is_negative(target_speed));
+        // convert pilot steering input to desired lateral acceleration
+        float desired_lat_accel = max_g_force * (desired_steering / 4500.0f);
 
-    // run speed to throttle output controller
-    calc_throttle(target_speed);
+        // reverse target lateral acceleration if backing up
+        if (reversed) {
+            desired_lat_accel = -desired_lat_accel;
+        }
+
+        // run lateral acceleration to steering controller
+        calc_steering_from_lateral_acceleration(desired_lat_accel, reversed);
+    }
+
+    // run speed to throttle controller
+    calc_throttle(desired_speed, false, true);
 }

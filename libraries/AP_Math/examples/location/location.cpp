@@ -2,8 +2,11 @@
 // Unit tests for the AP_Math polygon code
 //
 
+#define ALLOW_DOUBLE_MATH_FUNCTIONS
+
 #include <AP_HAL/AP_HAL.h>
 #include <AP_Math/AP_Math.h>
+#include <AP_Common/Location.h>
 
 void setup();
 void loop();

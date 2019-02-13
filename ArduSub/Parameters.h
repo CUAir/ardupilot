@@ -2,6 +2,8 @@
 
 #include <AP_Common/AP_Common.h>
 
+#include <AP_Gripper/AP_Gripper.h>
+
 // Global parameter class.
 //
 class Parameters {
@@ -15,15 +17,6 @@ public:
     // by newer code.
     //
     static const uint16_t        k_format_version = 1;
-
-    // The parameter software_type is set up solely for ground station use
-    // and identifies the software type (eg ArduPilotMega versus
-    // ArduCopterMega)
-    // GCS will interpret values 0-9 as ArduPilotMega.  Developers may use
-    // values within that range to identify different branches.
-    //
-    static const uint16_t        k_software_type = 40;          // 0 for APM
-    // trunk
 
     // Parameter identities.
     //
@@ -48,7 +41,7 @@ public:
         // Layout version number, always key zero.
         //
         k_param_format_version = 0,
-        k_param_software_type,
+        k_param_software_type, // unusued
 
         k_param_g2, // 2nd block of parameters
 
@@ -65,7 +58,7 @@ public:
         // Hardware/Software configuration
         k_param_BoardConfig = 20, // Board configuration (PX4/Linux/etc)
         k_param_scheduler, // Scheduler (for debugging/perf_info)
-        k_param_DataFlash, // DataFlash Logging
+        k_param_logger, // AP_Logger Logging
         k_param_serial_manager, // Serial ports, AP_SerialManager
         k_param_notify, // Notify Library, AP_Notify
         k_param_arming = 26, // Arming checks
@@ -96,6 +89,7 @@ public:
         k_param_circle_nav, // Disabled
         k_param_avoid, // Relies on proximity and fence
         k_param_NavEKF3,
+        k_param_loiter_nav,
 
 
         // Other external hardware interfaces
@@ -126,8 +120,8 @@ public:
         k_param_maxGain,
         k_param_minGain,
         k_param_numGainSettings,
-        k_param_cam_tilt_step,
-        k_param_lights_step,
+        k_param_cam_tilt_step, // deprecated
+        k_param_lights_step, // deprecated
 
         // Joystick button mapping parameters
         k_param_jbtn_0 = 95,
@@ -149,11 +143,11 @@ public:
 
 
         // PID Controllers
-        k_param_p_pos_xy = 126,
-        k_param_p_alt_hold,
-        k_param_pi_vel_xy,
-        k_param_p_vel_z,
-        k_param_pid_accel_z,
+        k_param_p_pos_xy = 126, // deprecated
+        k_param_p_alt_hold, // deprecated
+        k_param_pi_vel_xy, // deprecated
+        k_param_p_vel_z, // deprecated
+        k_param_pid_accel_z, // deprecated
 
 
         // Failsafes
@@ -167,9 +161,9 @@ public:
         k_param_fs_ekf_thresh,
         k_param_fs_ekf_action,
         k_param_fs_crash_check,
-        k_param_failsafe_battery_enabled,
-        k_param_fs_batt_mah,
-        k_param_fs_batt_voltage,
+        k_param_failsafe_battery_enabled, // unused - moved to AP_BattMonitor
+        k_param_fs_batt_mah,              // unused - moved to AP_BattMonitor
+        k_param_fs_batt_voltage,          // unused - moved to AP_BattMonitor
         k_param_failsafe_pilot_input,
         k_param_failsafe_pilot_input_timeout,
 
@@ -180,7 +174,7 @@ public:
         k_param_rangefinder_gain,
         k_param_wp_yaw_behavior = 170,
         k_param_xtrack_angle_limit, // Angle limit for crosstrack correction in Auto modes (degrees)
-        k_param_pilot_velocity_z_max,
+        k_param_pilot_speed_up,     // renamed from k_param_pilot_velocity_z_max
         k_param_pilot_accel_z,
         k_param_compass_enabled,
         k_param_surface_depth,
@@ -191,7 +185,7 @@ public:
         k_param_terrain_follow = 182,
         k_param_rc_feel_rp,
         k_param_throttle_gain,
-        k_param_cam_tilt_center,
+        k_param_cam_tilt_center, // deprecated
         k_param_frame_configuration,
 
         // Acro Mode parameters
@@ -208,12 +202,13 @@ public:
         // RC_Mapper Library
         k_param_rcmap, // Disabled
 
-        k_param_cam_slew_limit = 237,
+        k_param_cam_slew_limit = 237, // deprecated
+        k_param_lights_steps,
+        k_param_pilot_speed_dn,
 
     };
 
     AP_Int16        format_version;
-    AP_Int8         software_type;
 
     // Telemetry control
     //
@@ -222,11 +217,9 @@ public:
 
     AP_Float        throttle_filt;
 
+#if RANGEFINDER_ENABLED == ENABLED
     AP_Float        rangefinder_gain;
-
-    AP_Int8         failsafe_battery_enabled;   // battery failsafe enabled
-    AP_Float        fs_batt_voltage;            // battery voltage below which failsafe will be triggered
-    AP_Float        fs_batt_mah;                // battery capacity (in mah) below which failsafe will be triggered
+#endif
 
     AP_Int8         failsafe_leak;              // leak detection failsafe behavior
     AP_Int8         failsafe_gcs;               // ground station failsafe behavior
@@ -247,7 +240,8 @@ public:
 
     // Waypoints
     //
-    AP_Int16        pilot_velocity_z_max;        // maximum vertical velocity the pilot may request
+    AP_Int16        pilot_speed_up;        // maximum vertical ascending velocity the pilot may request
+    AP_Int16        pilot_speed_dn;        // maximum vertical descending velocity the pilot may request
     AP_Int16        pilot_accel_z;               // vertical acceleration the pilot may request
 
     // Throttle
@@ -263,7 +257,9 @@ public:
     AP_Float        fs_ekf_thresh;
     AP_Int16        gcs_pid_mask;
 
+#if AP_TERRAIN_AVAILABLE && AC_TERRAIN
     AP_Int8         terrain_follow;
+#endif
 
     AP_Int16        rc_speed; // speed of fast RC Channels in Hz
 
@@ -272,10 +268,8 @@ public:
     AP_Float        minGain;
     AP_Int8         numGainSettings;
     AP_Float        throttle_gain;
-    AP_Int16        cam_tilt_center;
 
-    AP_Int16        cam_tilt_step;
-    AP_Int16        lights_step;
+    AP_Int16        lights_steps;
 
     // Joystick button parameters
     JSButton        jbtn_0;
@@ -303,36 +297,12 @@ public:
     AP_Int8         acro_trainer;
     AP_Float        acro_expo;
 
-    // PI/D controllers
-    AC_PI_2D        pi_vel_xy;
-
-    AC_P            p_vel_z;
-    AC_PID          pid_accel_z;
-
-    AC_P            p_pos_xy;
-    AC_P            p_alt_hold;
-
     AP_Float                surface_depth;
     AP_Int8                 frame_configuration;
 
-    AP_Float cam_slew_limit;
     // Note: keep initializers here in the same order as they are declared
     // above.
-    Parameters() :
-
-        // PID controller       initial P         initial I         initial D       initial imax        initial filt hz     pid rate
-        //---------------------------------------------------------------------------------------------------------------------------------
-        pi_vel_xy(VEL_XY_P,        VEL_XY_I,                         VEL_XY_IMAX,        VEL_XY_FILT_HZ,     WPNAV_LOITER_UPDATE_TIME),
-
-        p_vel_z(VEL_Z_P),
-        pid_accel_z(ACCEL_Z_P,       ACCEL_Z_I,        ACCEL_Z_D,      ACCEL_Z_IMAX,       ACCEL_Z_FILT_HZ,    MAIN_LOOP_SECONDS),
-
-        // P controller         initial P
-        //----------------------------------------------------------------------
-        p_pos_xy(POS_XY_P),
-
-        p_alt_hold(ALT_HOLD_P)
-
+    Parameters()
     {
     }
 };
@@ -357,7 +327,7 @@ public:
 #endif
 
     // RC input channels
-    RC_Channels rc_channels;
+    RC_Channels_Sub rc_channels;
 
     // control over servo output ranges
     SRV_Channels servo_channels;

@@ -39,8 +39,8 @@ volatile struct range *rangerpru;
    constructor is not called until detect() returns true, so we
    already know that we should setup the rangefinder
 */
-AP_RangeFinder_BBB_PRU::AP_RangeFinder_BBB_PRU(RangeFinder &_ranger, uint8_t instance, RangeFinder::RangeFinder_State &_state) :
-    AP_RangeFinder_Backend(_ranger, instance, _state, MAV_DISTANCE_SENSOR_ULTRASOUND)
+AP_RangeFinder_BBB_PRU::AP_RangeFinder_BBB_PRU(RangeFinder::RangeFinder_State &_state, AP_RangeFinder_Params &_params) :
+    AP_RangeFinder_Backend(_state, _params)
 {
 }
 
@@ -48,7 +48,7 @@ AP_RangeFinder_BBB_PRU::AP_RangeFinder_BBB_PRU(RangeFinder &_ranger, uint8_t ins
    Stop PRU, load firmware (check if firmware is present), start PRU.
    If we get a result the sensor seems to be there.
 */
-bool AP_RangeFinder_BBB_PRU::detect(RangeFinder &_ranger, uint8_t instance)
+bool AP_RangeFinder_BBB_PRU::detect()
 {
     bool result = true;
     uint32_t mem_fd;
@@ -116,5 +116,6 @@ void AP_RangeFinder_BBB_PRU::update(void)
 {
     state.status = (RangeFinder::RangeFinder_Status)rangerpru->status;
     state.distance_cm = rangerpru->distance;
+    state.last_reading_ms = AP_HAL::millis();
 }
 #endif // CONFIG_HAL_BOARD_SUBTYPE

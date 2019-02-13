@@ -17,7 +17,7 @@
 #include <AP_AHRS/AP_AHRS.h>
 #include <AP_HAL/AP_HAL.h>
 
-#include "ap_version.h"
+#include "AP_Common/AP_FWVersion.h"
 #include "GCS.h"
 
 extern const AP_HAL::HAL& hal;
@@ -39,25 +39,22 @@ GCS_MAVLINK::queued_param_send()
         return;
     }
 
-    // send one parameter async reply if pending
-    send_parameter_reply();
-
-    if (_queued_parameter == nullptr) {
-        return;
-    }
-    
-    uint16_t bytes_allowed;
-    uint8_t count;
     uint32_t tnow = AP_HAL::millis();
     uint32_t tstart = AP_HAL::micros();
 
     // use at most 30% of bandwidth on parameters. The constant 26 is
     // 1/(1000 * 1/8 * 0.001 * 0.3)
-    bytes_allowed = 57 * (tnow - _queued_parameter_send_time_ms) * 26;
+    const uint32_t link_bw = _port->bw_in_kilobytes_per_second();
+
+    uint16_t bytes_allowed = link_bw * (tnow - _queued_parameter_send_time_ms) * 26;
+    const uint16_t size_for_one_param_value_msg = MAVLINK_MSG_ID_PARAM_VALUE_LEN + packet_overhead();
+    if (bytes_allowed < size_for_one_param_value_msg) {
+        bytes_allowed = size_for_one_param_value_msg;
+    }
     if (bytes_allowed > comm_get_txspace(chan)) {
         bytes_allowed = comm_get_txspace(chan);
     }
-    count = bytes_allowed / (MAVLINK_MSG_ID_PARAM_VALUE_LEN + packet_overhead());
+    uint8_t count = bytes_allowed / size_for_one_param_value_msg;
 
     // when we don't have flow control we really need to keep the
     // param download very slow, or it tends to stall
@@ -65,23 +62,25 @@ GCS_MAVLINK::queued_param_send()
         count = 5;
     }
 
-    while (_queued_parameter != nullptr && count--) {
-        AP_Param      *vp;
-        float value;
+    // send parameter async replies
+    while (count && send_parameter_reply()) {
+        // do nothing
+        _queued_parameter_send_time_ms = tnow;
+        count--;
+    }
 
-        // copy the current parameter and prepare to move to the next
-        vp = _queued_parameter;
+    if (_queued_parameter == nullptr) {
+        return;
+    }
 
-        // if the parameter can be cast to float, report it here and break out of the loop
-        value = vp->cast_to_float(_queued_parameter_type);
-
+    while (count && _queued_parameter != nullptr) {
         char param_name[AP_MAX_NAME_SIZE];
-        vp->copy_name_token(_queued_parameter_token, param_name, sizeof(param_name), true);
+        _queued_parameter->copy_name_token(_queued_parameter_token, param_name, sizeof(param_name), true);
 
         mavlink_msg_param_value_send(
             chan,
             param_name,
-            value,
+            _queued_parameter->cast_to_float(_queued_parameter_type),
             mav_var_type(_queued_parameter_type),
             _queued_parameter_count,
             _queued_parameter_index);
@@ -93,6 +92,7 @@ GCS_MAVLINK::queued_param_send()
             // don't use more than 1ms sending blocks of parameters
             break;
         }
+        count--;
     }
     _queued_parameter_send_time_ms = tnow;
 }
@@ -102,21 +102,20 @@ GCS_MAVLINK::queued_param_send()
  */
 bool GCS_MAVLINK::have_flow_control(void)
 {
-    if (!valid_channel(chan)) {
+    if (_port == nullptr) {
         return false;
     }
 
-    if (mavlink_comm_port[chan] == nullptr) {
-        return false;
+    if (_port->get_flow_control() != AP_HAL::UARTDriver::FLOW_CONTROL_DISABLE) {
+        return true;
     }
 
     if (chan == MAVLINK_COMM_0) {
         // assume USB console has flow control
-        return hal.gpio->usb_connected() || mavlink_comm_port[chan]->get_flow_control() != AP_HAL::UARTDriver::FLOW_CONTROL_DISABLE;
-    } else {
-        // all other channels
-        return mavlink_comm_port[chan]->get_flow_control() != AP_HAL::UARTDriver::FLOW_CONTROL_DISABLE;
+        return hal.gpio->usb_connected();
     }
+
+    return false;
 }
 
 
@@ -125,7 +124,7 @@ bool GCS_MAVLINK::have_flow_control(void)
   save==false so we don't want the save to happen when the user connects the
   ground station.
  */
-void GCS_MAVLINK::handle_request_data_stream(mavlink_message_t *msg, bool save)
+void GCS_MAVLINK::handle_request_data_stream(mavlink_message_t *msg)
 {
     mavlink_request_data_stream_t packet;
     mavlink_msg_request_data_stream_decode(msg, &packet);
@@ -139,68 +138,86 @@ void GCS_MAVLINK::handle_request_data_stream(mavlink_message_t *msg, bool save)
     else
         return;
 
-    AP_Int16 *rate = nullptr;
+    // if stream_id is still NUM_STREAMS at the end of this switch
+    // block then either we set stream rates for all streams, or we
+    // were asked to set the streamrate for an unrecognised stream
+    streams stream_id = NUM_STREAMS;
     switch (packet.req_stream_id) {
     case MAV_DATA_STREAM_ALL:
-        // note that we don't set STREAM_PARAMS - that is internal only
-        for (uint8_t i=0; i<STREAM_PARAMS; i++) {
-            if (save) {
+        for (uint8_t i=0; i<NUM_STREAMS; i++) {
+            if (i == STREAM_PARAMS) {
+                // don't touch parameter streaming rate; it is
+                // considered "internal".
+                continue;
+            }
+            if (persist_streamrates()) {
                 streamRates[i].set_and_save_ifchanged(freq);
             } else {
                 streamRates[i].set(freq);
             }
+            initialise_message_intervals_for_stream((streams)i);
         }
         break;
     case MAV_DATA_STREAM_RAW_SENSORS:
-        rate = &streamRates[STREAM_RAW_SENSORS];
+        stream_id = STREAM_RAW_SENSORS;
         break;
     case MAV_DATA_STREAM_EXTENDED_STATUS:
-        rate = &streamRates[STREAM_EXTENDED_STATUS];
+        stream_id = STREAM_EXTENDED_STATUS;
         break;
     case MAV_DATA_STREAM_RC_CHANNELS:
-        rate = &streamRates[STREAM_RC_CHANNELS];
+        stream_id = STREAM_RC_CHANNELS;
         break;
     case MAV_DATA_STREAM_RAW_CONTROLLER:
-        rate = &streamRates[STREAM_RAW_CONTROLLER];
+        stream_id = STREAM_RAW_CONTROLLER;
         break;
     case MAV_DATA_STREAM_POSITION:
-        rate = &streamRates[STREAM_POSITION];
+        stream_id = STREAM_POSITION;
         break;
     case MAV_DATA_STREAM_EXTRA1:
-        rate = &streamRates[STREAM_EXTRA1];
+        stream_id = STREAM_EXTRA1;
         break;
     case MAV_DATA_STREAM_EXTRA2:
-        rate = &streamRates[STREAM_EXTRA2];
+        stream_id = STREAM_EXTRA2;
         break;
     case MAV_DATA_STREAM_EXTRA3:
-        rate = &streamRates[STREAM_EXTRA3];
+        stream_id = STREAM_EXTRA3;
         break;
     }
 
+    if (stream_id == NUM_STREAMS) {
+        // asked to set rate on unknown stream (or all were set already)
+        return;
+    }
+
+    AP_Int16 *rate = &streamRates[stream_id];
+
     if (rate != nullptr) {
-        if (save) {
+        if (persist_streamrates()) {
             rate->set_and_save_ifchanged(freq);
         } else {
             rate->set(freq);
         }
+        initialise_message_intervals_for_stream(stream_id);
     }
 }
 
 void GCS_MAVLINK::handle_param_request_list(mavlink_message_t *msg)
 {
+    if (!params_ready()) {
+        return;
+    }
+
     mavlink_param_request_list_t packet;
     mavlink_msg_param_request_list_decode(msg, &packet);
 
-    // send system ID if we can
-    char sysid[40];
-    if (hal.util->get_system_id(sysid)) {
-        send_text(MAV_SEVERITY_INFO, sysid);
-    }
+    // requesting parameters is a convenient way to get extra information
+    send_banner();
 
     // Start sending parameters - next call to ::update will kick the first one out
     _queued_parameter = AP_Param::first(&_queued_parameter_token, &_queued_parameter_type);
     _queued_parameter_index = 0;
     _queued_parameter_count = AP_Param::count_parameters();
+    _queued_parameter_send_time_ms = AP_HAL::millis(); // avoid initial flooding
 }
 
 void GCS_MAVLINK::handle_param_request_read(mavlink_message_t *msg)
@@ -228,14 +245,20 @@ void GCS_MAVLINK::handle_param_request_read(mavlink_message_t *msg)
     struct pending_param_request req;
     req.chan = chan;
     req.param_index = packet.param_index;
-    memcpy(req.param_name, packet.param_id, sizeof(req.param_name));
+    memcpy(req.param_name, packet.param_id, MIN(sizeof(packet.param_id), sizeof(req.param_name)));
     req.param_name[AP_MAX_NAME_SIZE] = 0;
 
     // queue it for processing by io timer
     param_requests.push(req);
+
+    // speaking of which, we'd best make sure it is running:
+    if (!param_timer_registered) {
+        param_timer_registered = true;
+        hal.scheduler->register_io_process(FUNCTOR_BIND_MEMBER(&GCS_MAVLINK::param_io_timer, void));
+    }
 }
 
-void GCS_MAVLINK::handle_param_set(mavlink_message_t *msg, DataFlash_Class *DataFlash)
+void GCS_MAVLINK::handle_param_set(mavlink_message_t *msg)
 {
     mavlink_param_set_t packet;
     mavlink_msg_param_set_decode(msg, &packet);
@@ -269,66 +292,24 @@ void GCS_MAVLINK::handle_param_set(mavlink_message_t *msg, DataFlash_Class *Data
     // save the change
     vp->save(force_save);
 
-    if (DataFlash != nullptr) {
-        DataFlash->Log_Write_Parameter(key, vp->cast_to_float(var_type));
+    AP_Logger *AP_Logger = AP_Logger::get_singleton();
+    if (AP_Logger != nullptr) {
+        AP_Logger->Write_Parameter(key, vp->cast_to_float(var_type));
     }
-}
-
-// see if we should send a stream now. Called at 50Hz
-bool GCS_MAVLINK::stream_trigger(enum streams stream_num)
-{
-    if (stream_num >= NUM_STREAMS) {
-        return false;
-    }
-    float rate = (uint8_t)streamRates[stream_num].get();
-
-    rate *= adjust_rate_for_stream_trigger(stream_num);
-
-    if (rate <= 0) {
-        if (chan_is_streaming & (1U<<(chan-MAVLINK_COMM_0))) {
-            // if currently streaming then check if all streams are disabled
-            // to allow runtime detection of user disabling streaming
-            bool is_streaming = false;
-            for (uint8_t i=0; i<stream_num; i++) {
-                if (streamRates[stream_num] > 0) {
-                    is_streaming = true;
-                }
-            }
-            if (!is_streaming) {
-                // all streams have been turned off, clear the bit flag
-                chan_is_streaming &= ~(1U<<(chan-MAVLINK_COMM_0));
-            }
-        }
-        return false;
-    } else {
-        chan_is_streaming |= (1U<<(chan-MAVLINK_COMM_0));
-    }
-
-    if (stream_ticks[stream_num] == 0) {
-        // we're triggering now, setup the next trigger point
-        if (rate > 50) {
-            rate = 50;
-        }
-        stream_ticks[stream_num] = (50 / rate) - 1 + stream_slowdown;
-        return true;
-    }
-
-    // count down at 50Hz
-    stream_ticks[stream_num]--;
-    return false;
 }
 
 /*
   send a parameter value message to all active MAVLink connections
  */
-void GCS_MAVLINK::send_parameter_value_all(const char *param_name, ap_var_type param_type, float param_value)
+void GCS::send_parameter_value(const char *param_name, ap_var_type param_type, float param_value)
 {
+    const uint8_t mavlink_active = GCS_MAVLINK::active_channel_mask();
     for (uint8_t i=0; i<MAVLINK_COMM_NUM_BUFFERS; i++) {
         if ((1U<<i) & mavlink_active) {
-            mavlink_channel_t chan = (mavlink_channel_t)(MAVLINK_COMM_0+i);
-            if (HAVE_PAYLOAD_SPACE(chan, PARAM_VALUE)) {
+            const mavlink_channel_t _chan = (mavlink_channel_t)(MAVLINK_COMM_0+i);
+            if (HAVE_PAYLOAD_SPACE(_chan, PARAM_VALUE)) {
                 mavlink_msg_param_value_send(
-                    chan,
+                    _chan,
                     param_name,
                     param_value,
                     mav_var_type(param_type),
@@ -337,32 +318,10 @@ void GCS_MAVLINK::send_parameter_value_all(const char *param_name, ap_var_type p
             }
         }
     }
-    // also log to DataFlash
-    DataFlash_Class *dataflash = DataFlash_Class::instance();
+    // also log to AP_Logger
+    AP_Logger *dataflash = AP_Logger::get_singleton();
     if (dataflash != nullptr) {
-        dataflash->Log_Write_Parameter(param_name, param_value);
-    }
-}
-
-/*
-  send queued parameters if needed
- */
-void GCS_MAVLINK::send_queued_parameters(void)
-{
-    if (!param_timer_registered) {
-        param_timer_registered = true;
-        hal.scheduler->register_io_process(FUNCTOR_BIND_MEMBER(&GCS_MAVLINK::param_io_timer, void));
-    }
-
-    if (_queued_parameter == nullptr &&
-        param_replies.empty()) {
-        return;
-    }
-    if (streamRates[STREAM_PARAMS].get() <= 0) {
-        streamRates[STREAM_PARAMS].set(10);
-    }
-    if (stream_trigger(STREAM_PARAMS)) {
-        send_message(MSG_NEXT_PARAM);
+        dataflash->Write_Parameter(param_name, param_value);
     }
 }
 
@@ -419,13 +378,13 @@ void GCS_MAVLINK::param_io_timer(void)
 /*
   send a reply to a PARAM_REQUEST_READ
  */
-void GCS_MAVLINK::send_parameter_reply(void)
+bool GCS_MAVLINK::send_parameter_reply(void)
 {
     struct pending_param_reply reply;
     
     if (!param_replies.pop(reply)) {
         // nothing to do
-        return;
+        return false;
     }
     
     mavlink_msg_param_value_send(
@@ -435,4 +394,21 @@ void GCS_MAVLINK::send_parameter_reply(void)
         mav_var_type(reply.p_type),
         reply.count,
         reply.param_index);
+
+    return true;
+}
+
+void GCS_MAVLINK::handle_common_param_message(mavlink_message_t *msg)
+{
+    switch (msg->msgid) {
+    case MAVLINK_MSG_ID_PARAM_REQUEST_LIST:
+        handle_param_request_list(msg);
+        break;
+    case MAVLINK_MSG_ID_PARAM_SET:
+        handle_param_set(msg);
+        break;
+    case MAVLINK_MSG_ID_PARAM_REQUEST_READ:
+        handle_param_request_read(msg);
+        break;
+    }
 }

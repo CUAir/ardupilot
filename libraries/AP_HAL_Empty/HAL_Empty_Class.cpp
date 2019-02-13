@@ -30,6 +30,7 @@ HAL_Empty::HAL_Empty() :
         nullptr,            /* no uartD */
         nullptr,            /* no uartE */
         nullptr,            /* no uartF */
+        nullptr,            /* no uartG */
         &spiDeviceManager,
         &analogIn,
         &storageDriver,
@@ -39,8 +40,7 @@ HAL_Empty::HAL_Empty() :
         &rcoutDriver,
         &schedulerInstance,
         &utilInstance,
-        &opticalFlowDriver),
-    _member(new EmptyPrivateMember(123))
+        &opticalFlowDriver)
 {}
 
 void HAL_Empty::run(int argc, char* const argv[], Callbacks* callbacks) const

@@ -18,14 +18,6 @@ const AP_Param::Info Tracker::var_info[] = {
     // @User: Advanced
     GSCALAR(format_version,         "FORMAT_VERSION", 0),
 
-    // @Param: SYSID_SW_TYPE
-    // @DisplayName: Software Type
-    // @Description: This is used by the ground station to recognise the software type (eg ArduPlane vs ArduCopter)
-    // @Values: 0:ArduPlane,4:AntennaTracker,10:Copter,20:Rover
-    // @User: Advanced
-    // @ReadOnly: True
-    GSCALAR(software_type,          "SYSID_SW_TYPE",  Parameters::k_software_type),
-
     // @Param: SYSID_THISMAV
     // @DisplayName: MAVLink system ID of this vehicle
     // @Description: Allows setting an individual system id for this vehicle to distinguish it from others on the same network
@@ -270,8 +262,8 @@ const AP_Param::Info Tracker::var_info[] = {
     // @Param: LOG_BITMASK
     // @DisplayName: Log bitmask
     // @Description: 4 byte bitmap of log types to enable
-    // @Values: 63:Default,0:Disabled
-    // @Bitmask: 0:ATTITUDE,1:GPS,2:RCIN,3:IMU,4:RCOUT,5:COMPASS
+    // @Values: 127:Default,0:Disabled
+    // @Bitmask: 0:ATTITUDE,1:GPS,2:RCIN,3:IMU,4:RCOUT,5:COMPASS,6:Battery
     // @User: Standard
     GSCALAR(log_bitmask, "LOG_BITMASK", DEFAULT_LOG_BITMASK),
 
@@ -308,8 +300,8 @@ const AP_Param::Info Tracker::var_info[] = {
     // @Path: ../libraries/AP_Notify/AP_Notify.cpp
     GOBJECT(notify, "NTF_",  AP_Notify),
 
-    // @Path: ../libraries/RC_Channel/RC_Channels.cpp
-    GOBJECT(rc_channels,     "RC", RC_Channels),
+    // @Path: RC_Channels.cpp
+    GOBJECT(rc_channels,     "RC", RC_Channels_Tracker),
 
     // @Path: ../libraries/SRV_Channel/SRV_Channels.cpp
     GOBJECT(servo_channels,     "SERVO", SRV_Channels),
@@ -385,6 +377,9 @@ const AP_Param::Info Tracker::var_info[] = {
     // @User: Advanced
     GSCALAR(command_total,          "CMD_TOTAL",      0),
 
+    // @Group: BATT
+    // @Path: ../libraries/AP_BattMonitor/AP_BattMonitor.cpp
+    GOBJECT(battery,                "BATT", AP_BattMonitor),
 
     AP_VAREND
 };
@@ -397,6 +392,7 @@ void Tracker::load_parameters(void)
 
         // erase all parameters
         hal.console->printf("Firmware change: erasing EEPROM...\n");
+        StorageManager::erase();
         AP_Param::erase_all();
 
         // save the current format version
@@ -408,4 +404,11 @@ void Tracker::load_parameters(void)
     // Load all auto-loaded EEPROM variables
     AP_Param::load_all();
     hal.console->printf("load_all took %luus\n", (unsigned long)(AP_HAL::micros() - before));
+
+#if HAL_HAVE_SAFETY_SWITCH
+    // configure safety switch to allow stopping the motors while armed
+    AP_Param::set_default_by_name("BRD_SAFETYOPTION", AP_BoardConfig::BOARD_SAFETY_OPTION_BUTTON_ACTIVE_SAFETY_OFF|
+                                                      AP_BoardConfig::BOARD_SAFETY_OPTION_BUTTON_ACTIVE_SAFETY_ON|
+                                                      AP_BoardConfig::BOARD_SAFETY_OPTION_BUTTON_ACTIVE_ARMED);
+#endif
 }

@@ -6,6 +6,7 @@
 class GCS_Tracker : public GCS
 {
     friend class Tracker; // for access to _chan in parameter declarations
+    friend class GCS_MAVLINK_Tracker;
 
 public:
 
@@ -16,16 +17,11 @@ public:
     GCS_MAVLINK_Tracker &chan(const uint8_t ofs) override { return _chan[ofs]; };
     const GCS_MAVLINK_Tracker &chan(const uint8_t ofs) const override { return _chan[ofs]; };
 
-    void setup_uarts(AP_SerialManager &serial_manager) override;
-
 private:
 
     void request_datastream_position(uint8_t sysid, uint8_t compid);
     void request_datastream_airpressure(uint8_t sysid, uint8_t compid);
 
     GCS_MAVLINK_Tracker _chan[MAVLINK_COMM_NUM_BUFFERS];
-
-    bool cli_enabled() const override;
-    AP_HAL::BetterStream* cliSerial() override;
 
 };

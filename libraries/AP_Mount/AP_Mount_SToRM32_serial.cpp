@@ -8,11 +8,6 @@ extern const AP_HAL::HAL& hal;
 
 AP_Mount_SToRM32_serial::AP_Mount_SToRM32_serial(AP_Mount &frontend, AP_Mount::mount_state &state, uint8_t instance) :
     AP_Mount_Backend(frontend, state, instance),
-    _port(nullptr),
-    _initialised(false),
-    _last_send(0),
-    _reply_length(0),
-    _reply_counter(0),
     _reply_type(ReplyType_UNKNOWN)
 {}
 
@@ -76,7 +71,7 @@ void AP_Mount_SToRM32_serial::update()
 
         // point mount to a GPS point given by the mission planner
         case MAV_MOUNT_MODE_GPS_POINT:
-            if(_frontend._ahrs.get_gps().status() >= AP_GPS::GPS_OK_FIX_2D) {
+            if(AP::gps().status() >= AP_GPS::GPS_OK_FIX_2D) {
                 calc_angle_to_location(_state._roi_target, _angle_ef_target_rad, true, true);
                 resend_now = true;
             }
@@ -128,8 +123,8 @@ void AP_Mount_SToRM32_serial::set_mode(enum MAV_MOUNT_MODE mode)
     _state._mode = mode;
 }
 
-// status_msg - called to allow mounts to send their status to GCS using the MOUNT_STATUS message
-void AP_Mount_SToRM32_serial::status_msg(mavlink_channel_t chan)
+// send_mount_status - called to allow mounts to send their status to GCS using the MOUNT_STATUS message
+void AP_Mount_SToRM32_serial::send_mount_status(mavlink_channel_t chan)
 {
     // return target angles as gimbal's actual attitude.
     mavlink_msg_mount_status_send(chan, 0, 0, _current_angle.y, _current_angle.x, _current_angle.z);
@@ -273,11 +268,6 @@ void AP_Mount_SToRM32_serial::parse_reply() {
             _current_angle.x = _buffer.data.imu1_roll;
             _current_angle.y = _buffer.data.imu1_pitch;
             _current_angle.z = _buffer.data.imu1_yaw;
-            break;
-        case ReplyType_ACK:
-            crc = crc_calculate(&_buffer[1],
-                                sizeof(SToRM32_reply_ack_struct) - 3);
-            crc_ok = crc == _buffer.ack.crc;
             break;
         default:
             break;

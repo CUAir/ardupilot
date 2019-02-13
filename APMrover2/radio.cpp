@@ -6,13 +6,14 @@
 void Rover::set_control_channels(void)
 {
     // check change on RCMAP
-    channel_steer    = RC_Channels::rc_channel(rcmap.roll()-1);
-    channel_throttle = RC_Channels::rc_channel(rcmap.throttle()-1);
-    channel_learn    = RC_Channels::rc_channel(g.learn_channel-1);
+    channel_steer    = rc().channel(rcmap.roll()-1);
+    channel_throttle = rc().channel(rcmap.throttle()-1);
+    channel_lateral  = rc().channel(rcmap.yaw()-1);
 
     // set rc channel ranges
     channel_steer->set_angle(SERVO_MAX);
     channel_throttle->set_angle(100);
+    channel_lateral->set_angle(100);
 
     // Allow to reconfigure ouput when not armed
     if (!arming.is_armed()) {
@@ -32,12 +33,7 @@ void Rover::init_rc_in()
     // set rc dead zones
     channel_steer->set_default_dead_zone(30);
     channel_throttle->set_default_dead_zone(30);
-}
-
-void Rover::init_rc_out()
-{
-    // set auxiliary ranges
-    update_aux();
+    channel_lateral->set_default_dead_zone(30);
 }
 
 /*
@@ -45,6 +41,12 @@ void Rover::init_rc_out()
 */
 void Rover::rudder_arm_disarm_check()
 {
+    // check if arming/disarm using rudder is allowed
+    AP_Arming::ArmingRudder arming_rudder = arming.get_rudder_arming_type();
+    if (arming_rudder == AP_Arming::ARMING_RUDDER_DISABLED) {
+        return;
+    }
+
     // In Rover we need to check that its set to the throttle trim and within the DZ
     // if throttle is not within trim dz, then pilot cannot rudder arm/disarm
     if (!channel_throttle->in_trim_dz()) {
@@ -52,8 +54,8 @@ void Rover::rudder_arm_disarm_check()
         return;
     }
 
-    // if not in a manual throttle mode then disallow rudder arming/disarming
-    if (control_mode->auto_throttle()) {
+    // check if arming/disarming allowed from this mode
+    if (!control_mode->allows_arming_from_transmitter()) {
         rudder_arm_timer = 0;
         return;
     }
@@ -64,7 +66,7 @@ void Rover::rudder_arm_disarm_check()
             const uint32_t now = millis();
 
             if (rudder_arm_timer == 0 ||
-                now - rudder_arm_timer < 3000) {
+                now - rudder_arm_timer < ARM_DELAY_MS) {
                 if (rudder_arm_timer == 0) {
                     rudder_arm_timer = now;
                 }
@@ -77,15 +79,13 @@ void Rover::rudder_arm_disarm_check()
             // not at full right rudder
             rudder_arm_timer = 0;
         }
-    } else if (!motor_active() & !g2.motors.have_skid_steering()) {
+    } else if ((arming_rudder == AP_Arming::ARMING_RUDDER_ARMDISARM) && !g2.motors.active()) {
         // when armed and motor not active (not moving), full left rudder starts disarming counter
-        // This is disabled for skid steering otherwise when tring to turn a skid steering rover around
-        // the rover would disarm
         if (channel_steer->get_control_in() < -4000) {
             const uint32_t now = millis();
 
             if (rudder_arm_timer == 0 ||
-                now - rudder_arm_timer < 3000) {
+                now - rudder_arm_timer < ARM_DELAY_MS) {
                 if (rudder_arm_timer == 0) {
                     rudder_arm_timer = now;
                 }
@@ -103,113 +103,48 @@ void Rover::rudder_arm_disarm_check()
 
 void Rover::read_radio()
 {
-    if (!hal.rcin->new_input()) {
+    if (!rc().read_input()) {
         // check if we lost RC link
-        control_failsafe(channel_throttle->get_radio_in());
+        radio_failsafe_check(channel_throttle->get_radio_in());
         return;
     }
 
     failsafe.last_valid_rc_ms = AP_HAL::millis();
-    // read the RC value
-    RC_Channels::set_pwm_all();
     // check that RC value are valid
-    control_failsafe(channel_throttle->get_radio_in());
-
-    // apply RC skid steer mixing
-    if (g.skid_steer_in) {
-        // convert the two radio_in values from skid steering values
-        /*
-          mixing rule:
-          steering = motor1 - motor2
-          throttle = 0.5*(motor1 + motor2)
-          motor1 = throttle + 0.5*steering
-          motor2 = throttle - 0.5*steering
-        */          
-
-        const float left_input = channel_steer->norm_input();
-        const float right_input = channel_throttle->norm_input();
-        const float throttle_scaled = 0.5f * (left_input + right_input);
-        float steering_scaled = constrain_float(left_input - right_input,-1.0f,1.0f);
-
-        // flip the steering direction if requesting the vehicle reverse (to be consistent with separate steering-throttle frames)
-        if (is_negative(throttle_scaled)) {
-            steering_scaled = -steering_scaled;
-        }
-
-        int16_t steer = channel_steer->get_radio_trim();
-        int16_t thr   = channel_throttle->get_radio_trim();
-        if (steering_scaled > 0.0f) {
-            steer += steering_scaled * (channel_steer->get_radio_max() - channel_steer->get_radio_trim());
-        } else {
-            steer += steering_scaled * (channel_steer->get_radio_trim() - channel_steer->get_radio_min());
-        }
-        if (throttle_scaled > 0.0f) {
-            thr += throttle_scaled * (channel_throttle->get_radio_max() - channel_throttle->get_radio_trim());
-        } else {
-            thr += throttle_scaled * (channel_throttle->get_radio_trim() - channel_throttle->get_radio_min());
-        }
-        channel_steer->set_pwm(steer);
-        channel_throttle->set_pwm(thr);
-    }
+    radio_failsafe_check(channel_throttle->get_radio_in());
 
     // check if we try to do RC arm/disarm
     rudder_arm_disarm_check();
 }
 
-void Rover::control_failsafe(uint16_t pwm)
+void Rover::radio_failsafe_check(uint16_t pwm)
 {
     if (!g.fs_throttle_enabled) {
-        // no throttle failsafe
+        // radio failsafe disabled
         return;
     }
 
-    // Check for failsafe condition based on loss of GCS control
-    if (rc_override_active) {
-        failsafe_trigger(FAILSAFE_EVENT_RC, (millis() - failsafe.rc_override_timer) > 1500);
-    } else if (g.fs_throttle_enabled) {
-        bool failed = pwm < static_cast<uint16_t>(g.fs_throttle_value);
-        if (AP_HAL::millis() - failsafe.last_valid_rc_ms > 2000) {
-            failed = true;
-        }
-        failsafe_trigger(FAILSAFE_EVENT_THROTTLE, failed);
+    bool failed = pwm < static_cast<uint16_t>(g.fs_throttle_value);
+    if (AP_HAL::millis() - failsafe.last_valid_rc_ms > 200) {
+        failed = true;
     }
+    failsafe_trigger(FAILSAFE_EVENT_THROTTLE, failed);
 }
 
-/*
-  return true if throttle level is below throttle failsafe threshold
-  or RC input is invalid
- */
-bool Rover::throttle_failsafe_active(void)
+bool Rover::trim_radio()
 {
-    if (!g.fs_throttle_enabled) {
+    if (!rc().has_valid_input()) {
+        // can't trim without valid input
         return false;
     }
-    if (millis() - failsafe.last_valid_rc_ms > 1000) {
-        // we haven't had a valid RC frame for 1 seconds
-        return true;
-    }
-    if (channel_throttle->get_reverse()) {
-        return channel_throttle->get_radio_in() >= g.fs_throttle_value;
-    }
-    return channel_throttle->get_radio_in() <= g.fs_throttle_value;
-}
 
-void Rover::trim_control_surfaces()
-{
-    read_radio();
     // Store control surface trim values
     // ---------------------------------
-    if (channel_steer->get_radio_in() > 1400) {
-        channel_steer->set_radio_trim(channel_steer->get_radio_in());
-        // save to eeprom
-        channel_steer->save_eeprom();
+    if ((channel_steer->get_radio_in() > 1400) && (channel_steer->get_radio_in() < 1600)) {
+        channel_steer->set_and_save_radio_trim(channel_steer->get_radio_in());
+    } else {
+        return false;
     }
-}
 
-void Rover::trim_radio()
-{
-    for (int y = 0; y < 30; y++) {
-        read_radio();
-    }
-    trim_control_surfaces();
+    return true;
 }

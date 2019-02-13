@@ -35,9 +35,12 @@ struct PACKED RallyLocation {
 /// @class    AP_Rally
 /// @brief    Object managing Rally Points
 class AP_Rally {
-
 public:
     AP_Rally(AP_AHRS &ahrs);
+
+    /* Do not allow copies */
+    AP_Rally(const AP_Rally &other) = delete;
+    AP_Rally &operator=(const AP_Rally&) = delete;
 
     // data handling
     bool get_rally_point_with_index(uint8_t i, RallyLocation &ret) const;
@@ -46,7 +49,7 @@ public:
     uint8_t get_rally_max(void) const { return _storage.size() / AP_RALLY_WP_SIZE; }
 
     float get_rally_limit_km() const { return _rally_limit_km; }
-    
+
     Location rally_location_to_location(const RallyLocation &ret) const;
 
     // logic handling
@@ -59,7 +62,13 @@ public:
     // parameter block
     static const struct AP_Param::GroupInfo var_info[];
 
+    // get singleton instance
+    static AP_Rally *get_singleton() { return _singleton; }
+
+
 private:
+    static AP_Rally *_singleton;
+
     virtual bool is_valid(const Location &rally_point) const { return true; }
 
     static StorageAccess _storage;
@@ -73,4 +82,8 @@ private:
     AP_Int8  _rally_incl_home;
 
     uint32_t _last_change_time_ms;
+};
+
+namespace AP {
+    AP_Rally *rally();
 };

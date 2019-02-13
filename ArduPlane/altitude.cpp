@@ -186,7 +186,7 @@ void Plane::set_target_altitude_current_adjusted(void)
 void Plane::set_target_altitude_location(const Location &loc)
 {
     target_altitude.amsl_cm = loc.alt;
-    if (loc.flags.relative_alt) {
+    if (loc.relative_alt) {
         target_altitude.amsl_cm += home.alt;
     }
 #if AP_TERRAIN_AVAILABLE
@@ -196,10 +196,10 @@ void Plane::set_target_altitude_location(const Location &loc)
       terrain altitude
      */
     float height;
-    if (loc.flags.terrain_alt && terrain.height_above_terrain(height, true)) {
+    if (loc.terrain_alt && terrain.height_above_terrain(height, true)) {
         target_altitude.terrain_following = true;
         target_altitude.terrain_alt_cm = loc.alt;
-        if (!loc.flags.relative_alt) {
+        if (!loc.relative_alt) {
             // it has home added, remove it
             target_altitude.terrain_alt_cm -= home.alt;
         }
@@ -312,7 +312,7 @@ int32_t Plane::calc_altitude_error_cm(void)
 /*
   check for FBWB_min_altitude_cm violation
  */
-void Plane::check_minimum_altitude(void)
+void Plane::check_fbwb_minimum_altitude(void)
 {
     if (g.FBWB_min_altitude_cm == 0) {
         return;
@@ -359,7 +359,7 @@ void Plane::set_offset_altitude_location(const Location &loc)
       terrain altitude
      */
     float height;
-    if (loc.flags.terrain_alt && 
+    if (loc.terrain_alt && 
         target_altitude.terrain_following &&
         terrain.height_above_terrain(height, true)) {
         target_altitude.offset_cm = target_altitude.terrain_alt_cm - (height * 100);
@@ -396,10 +396,10 @@ bool Plane::above_location_current(const Location &loc)
 {
 #if AP_TERRAIN_AVAILABLE
     float terrain_alt;
-    if (loc.flags.terrain_alt && 
+    if (loc.terrain_alt && 
         terrain.height_above_terrain(terrain_alt, true)) {
         float loc_alt = loc.alt*0.01f;
-        if (!loc.flags.relative_alt) {
+        if (!loc.relative_alt) {
             loc_alt -= home.alt*0.01f;
         }
         return terrain_alt > loc_alt;
@@ -407,7 +407,7 @@ bool Plane::above_location_current(const Location &loc)
 #endif
 
     float loc_alt_cm = loc.alt;
-    if (loc.flags.relative_alt) {
+    if (loc.relative_alt) {
         loc_alt_cm += home.alt;
     }
     return current_loc.alt > loc_alt_cm;
@@ -421,7 +421,7 @@ void Plane::setup_terrain_target_alt(Location &loc)
 {
 #if AP_TERRAIN_AVAILABLE
     if (g.terrain_follow) {
-        loc.flags.terrain_alt = true;
+        loc.terrain_alt = true;
     }
 #endif
 }
@@ -471,14 +471,14 @@ float Plane::mission_alt_offset(void)
 float Plane::height_above_target(void)
 {
     float target_alt = next_WP_loc.alt*0.01;
-    if (!next_WP_loc.flags.relative_alt) {
+    if (!next_WP_loc.relative_alt) {
         target_alt -= ahrs.get_home().alt*0.01f;
     }
 
 #if AP_TERRAIN_AVAILABLE
     // also record the terrain altitude if possible
     float terrain_altitude;
-    if (next_WP_loc.flags.terrain_alt && 
+    if (next_WP_loc.terrain_alt && 
         terrain.height_above_terrain(terrain_altitude, true)) {
         return terrain_altitude - target_alt;
     }
@@ -574,7 +574,7 @@ void Plane::rangefinder_height_update(void)
 {
     float distance = rangefinder.distance_cm_orient(ROTATION_PITCH_270)*0.01f;
     
-    if ((rangefinder.status_orient(ROTATION_PITCH_270) == RangeFinder::RangeFinder_Good) && home_is_set != HOME_UNSET) {
+    if ((rangefinder.status_orient(ROTATION_PITCH_270) == RangeFinder::RangeFinder_Good) && ahrs.home_is_set()) {
         if (!rangefinder_state.have_initial_reading) {
             rangefinder_state.have_initial_reading = true;
             rangefinder_state.initial_range = distance;
@@ -603,7 +603,7 @@ void Plane::rangefinder_height_update(void)
                 (flight_stage == AP_Vehicle::FixedWing::FLIGHT_LAND ||
                  control_mode == QLAND ||
                  control_mode == QRTL ||
-                 (control_mode == AUTO && plane.mission.get_current_nav_cmd().id == MAV_CMD_NAV_VTOL_LAND)) &&
+                 (control_mode == AUTO && quadplane.is_vtol_land(plane.mission.get_current_nav_cmd().id))) &&
                 g.rangefinder_landing) {
                 rangefinder_state.in_use = true;
                 gcs().send_text(MAV_SEVERITY_INFO, "Rangefinder engaged at %.2fm", (double)rangefinder_state.height_estimate);

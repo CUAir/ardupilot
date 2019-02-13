@@ -16,7 +16,7 @@ void Copter::read_inertia()
     }
 
     // without home return alt above the EKF origin
-    if (ap.home_state == HOME_UNSET) {
+    if (!ahrs.home_is_set()) {
         // with inertial nav we can update the altitude and climb rate at 50hz
         current_loc.alt = inertial_nav.get_altitude();
     } else {
@@ -25,6 +25,6 @@ void Copter::read_inertia()
     }
 
     // set flags and get velocity
-    current_loc.flags.relative_alt = true;
+    current_loc.relative_alt = true;
     climb_rate = inertial_nav.get_velocity_z();
 }

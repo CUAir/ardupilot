@@ -18,7 +18,10 @@
  */
 
 #include "Tracker.h"
+
+#define FORCE_VERSION_H_INCLUDE
 #include "version.h"
+#undef FORCE_VERSION_H_INCLUDE
 
 #define SCHED_TASK(func, _interval_ticks, _max_time_micros) SCHED_TASK_CLASS(Tracker, &tracker, func, _interval_ticks, _max_time_micros)
 
@@ -34,16 +37,17 @@ const AP_Scheduler::Task Tracker::scheduler_tasks[] = {
     SCHED_TASK(update_tracking,        50,   1000),
     SCHED_TASK(update_GPS,             10,   4000),
     SCHED_TASK(update_compass,         10,   1500),
-    SCHED_TASK(update_barometer,       10,   1500),
-    SCHED_TASK(gcs_update,             50,   1700),
-    SCHED_TASK(gcs_data_stream_send,   50,   3000),
-    SCHED_TASK(compass_accumulate,     50,   1500),
-    SCHED_TASK(barometer_accumulate,   50,    900),
+    SCHED_TASK_CLASS(AP_BattMonitor,    &tracker.battery,   read,           10, 1500),
+    SCHED_TASK_CLASS(AP_Baro,          &tracker.barometer,  update,         10,   1500),
+    SCHED_TASK_CLASS(GCS,              (GCS*)&tracker._gcs, update_receive, 50, 1700),
+    SCHED_TASK_CLASS(GCS,              (GCS*)&tracker._gcs, update_send,    50, 3000),
+    SCHED_TASK_CLASS(AP_Baro,           &tracker.barometer, accumulate,     50,  900),
     SCHED_TASK(ten_hz_logging_loop,    10,    300),
-    SCHED_TASK(dataflash_periodic,     50,    300),
-    SCHED_TASK(update_notify,          50,    100),
-    SCHED_TASK(check_usb_mux,          10,    300),
-    SCHED_TASK(gcs_retry_deferred,     50,   1000),
+#if LOGGING_ENABLED == ENABLED
+    SCHED_TASK_CLASS(AP_Logger,   &tracker.logger, periodic_tasks, 50,  300),
+#endif
+    SCHED_TASK_CLASS(AP_InertialSensor, &tracker.ins,       periodic,       50,   50),
+    SCHED_TASK_CLASS(AP_Notify,         &tracker.notify,    update,         50,  100),
     SCHED_TASK(one_second_loop,         1,   3900),
     SCHED_TASK(compass_cal_update,     50,    100),
     SCHED_TASK(accel_cal_update,       10,    100)
@@ -60,7 +64,7 @@ void Tracker::setup()
     init_tracker();
 
     // initialise the main loop scheduler
-    scheduler.init(&scheduler_tasks[0], ARRAY_SIZE(scheduler_tasks));
+    scheduler.init(&scheduler_tasks[0], ARRAY_SIZE(scheduler_tasks), (uint32_t)-1);
 }
 
 /**
@@ -77,11 +81,6 @@ void Tracker::loop()
     scheduler.run(19900UL);
 }
 
-void Tracker::dataflash_periodic(void)
-{
-    DataFlash.periodic_tasks();
-}
-
 void Tracker::one_second_loop()
 {
     // send a heartbeat
@@ -92,6 +91,9 @@ void Tracker::one_second_loop()
 
     // sync MAVLink system ID
     mavlink_system.sysid = g.sysid_this_mav;
+
+    // update assigned functions and enable auxiliary servos
+    SRV_Channels::enable_aux_servos();
 
     // updated armed/disarmed status LEDs
     update_armed_disarmed();
@@ -104,30 +106,41 @@ void Tracker::one_second_loop()
         }
         one_second_counter = 0;
     }
+
+    if (!ahrs.home_is_set()) {
+        // set home to current location
+        Location temp_loc;
+        if (ahrs.get_location(temp_loc)) {
+            set_home(temp_loc);
+        }
+    }
+
+    // need to set "likely flying" when armed to allow for compass
+    // learning to run
+    ahrs.set_likely_flying(hal.util->get_soft_armed());
 }
 
 void Tracker::ten_hz_logging_loop()
 {
     if (should_log(MASK_LOG_IMU)) {
-        DataFlash.Log_Write_IMU(ins);
+        logger.Write_IMU();
     }
     if (should_log(MASK_LOG_ATTITUDE)) {
         Log_Write_Attitude();
     }
     if (should_log(MASK_LOG_RCIN)) {
-        DataFlash.Log_Write_RCIN();
+        logger.Write_RCIN();
     }
     if (should_log(MASK_LOG_RCOUT)) {
-        DataFlash.Log_Write_RCOUT();
+        logger.Write_RCOUT();
     }
 }
 
 const AP_HAL::HAL& hal = AP_HAL::get_HAL();
 
 Tracker::Tracker(void)
-    : DataFlash{FIRMWARE_STRING, g.log_bitmask}
+    : logger(g.log_bitmask)
 {
-    memset(&current_loc, 0, sizeof(current_loc));
     memset(&vehicle, 0, sizeof(vehicle));
 }
 

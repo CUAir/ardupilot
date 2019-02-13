@@ -1,9 +1,14 @@
 from __future__ import print_function
+
+import atexit
 import math
 import os
 import random
 import re
+import shlex
+import subprocess
 import sys
+import tempfile
 import time
 from math import acos, atan2, cos, pi, sqrt
 from subprocess import PIPE, Popen, call, check_call
@@ -16,6 +21,8 @@ if (sys.version_info[0] >= 3):
     ENCODING = 'ascii'
 else:
     ENCODING = None
+
+RADIUS_OF_EARTH = 6378100.0  # in meters
 
 def m2ft(x):
     """Meters to feet."""
@@ -85,12 +92,15 @@ def relwaf():
     return "./modules/waf/waf-light"
 
 
-def waf_configure(board, j=None, debug=False):
+def waf_configure(board, j=None, debug=False, extra_args=[]):
     cmd_configure = [relwaf(), "configure", "--board", board]
     if debug:
         cmd_configure.append('--debug')
     if j is not None:
         cmd_configure.extend(['-j', str(j)])
+    pieces = [shlex.split(x) for x in extra_args]
+    for piece in pieces:
+        cmd_configure.extend(piece)
     run_cmd(cmd_configure, directory=topdir(), checkfail=True)
 
 
@@ -98,14 +108,16 @@ def waf_clean():
     run_cmd([relwaf(), "clean"], directory=topdir(), checkfail=True)
 
 
-def build_SITL(build_target, j=None, debug=False, board='sitl'):
+def build_SITL(build_target, j=None, debug=False, board='sitl', clean=True, configure=True, extra_configure_args=[]):
     """Build desktop SITL."""
 
     # first configure
-    waf_configure(board, j=j, debug=debug)
+    if configure:
+        waf_configure(board, j=j, debug=debug, extra_args=extra_configure_args)
 
     # then clean
-    waf_clean()
+    if clean:
+        waf_clean()
 
     # then build
     cmd_make = [relwaf(), "build", "--target", build_target]
@@ -128,6 +140,17 @@ def build_examples(board, j=None, debug=False, clean=False):
     run_cmd(cmd_make, directory=topdir(), checkfail=True, show=True)
     return True
 
+def build_tests(board, j=None, debug=False, clean=False):
+    # first configure
+    waf_configure(board, j=j, debug=debug)
+
+    # then clean
+    if clean:
+        waf_clean()
+
+    # then build
+    run_cmd([relwaf(), "tests"], directory=topdir(), checkfail=True, show=True)
+    return True
 
 # list of pexpect children to close on exit
 close_list = []
@@ -187,17 +210,68 @@ def valgrind_log_filepath(binary, model):
     return make_safe_filename('%s-%s-valgrind.log' % (os.path.basename(binary), model,))
 
 
-def start_SITL(binary, valgrind=False, gdb=False, wipe=False, synthetic_clock=True, home=None, model=None, speedup=1, defaults_file=None, unhide_parameters=False):
+def kill_screen_gdb():
+    cmd = ["screen", "-X", "-S", "ardupilot-gdb", "quit"]
+    subprocess.Popen(cmd)
+
+
+def start_SITL(binary,
+               valgrind=False,
+               gdb=False,
+               wipe=False,
+               synthetic_clock=True,
+               home=None,
+               model=None,
+               speedup=1,
+               defaults_file=None,
+               unhide_parameters=False,
+               gdbserver=False,
+               breakpoints=[],
+               vicon=False):
     """Launch a SITL instance."""
     cmd = []
     if valgrind and os.path.exists('/usr/bin/valgrind'):
-        cmd.extend(['valgrind', '-q', '--log-file=%s' % valgrind_log_filepath(binary=binary, model=model)])
-    if gdb:
+        # we specify a prefix for vgdb-pipe because on Vagrant virtual
+        # machines the pipes are created on the mountpoint for the
+        # shared directory with the host machine.  mmap's,
+        # unsurprisingly, fail on files created on that mountpoint.
+        vgdb_prefix = os.path.join(tempfile.gettempdir(), "vgdb-pipe")
+        log_file = valgrind_log_filepath(binary=binary, model=model)
+        cmd.extend([
+            'valgrind',
+            # adding this option allows valgrind to cope with the overload
+            # of operator new
+            "--soname-synonyms=somalloc=nouserintercepts",
+            '--vgdb-prefix=%s' % vgdb_prefix,
+            '-q',
+            '--log-file=%s' % log_file])
+    if gdbserver:
+        cmd.extend(['gdbserver', 'localhost:3333'])
+        if gdb:
+            # attach gdb to the gdbserver:
+            f = open("/tmp/x.gdb", "w")
+            f.write("target extended-remote localhost:3333\nc\n")
+            for breakpoint in breakpoints:
+                f.write("b %s\n" % (breakpoint,))
+            f.close()
+            run_cmd('screen -d -m -S ardupilot-gdbserver '
+                    'bash -c "gdb -x /tmp/x.gdb"')
+    elif gdb:
         f = open("/tmp/x.gdb", "w")
+        for breakpoint in breakpoints:
+            f.write("b %s\n" % (breakpoint,))
         f.write("r\n")
         f.close()
-        cmd.extend(['xterm', '-e', 'gdb', '-x', '/tmp/x.gdb', '--args'])
-    
+        if os.environ.get('DISPLAY'):
+            cmd.extend(['xterm', '-e', 'gdb', '-x', '/tmp/x.gdb', '--args'])
+        else:
+            cmd.extend(['screen',
+                        '-L', '-Logfile', 'gdb.log',
+                        '-d',
+                        '-m',
+                        '-S', 'ardupilot-gdb',
+                        'gdb', '-x', '/tmp/x.gdb', binary, '--args'])
+
     cmd.append(binary)
     if wipe:
         cmd.append('-w')
@@ -213,11 +287,26 @@ def start_SITL(binary, valgrind=False, gdb=False, wipe=False, synthetic_clock=Tr
         cmd.extend(['--defaults', defaults_file])
     if unhide_parameters:
         cmd.extend(['--unhide-groups'])
+    if vicon:
+        cmd.extend(["--uartF=sim:vicon:"])
+
+    if gdb and not os.getenv('DISPLAY'):
+        p = subprocess.Popen(cmd)
+        atexit.register(kill_screen_gdb)
+        # we are expected to return a pexpect wrapped around the
+        # stdout of the ArduPilot binary.  Not going to happen until
+        # AP gets a redirect-stdout-to-filehandle option.  So, in the
+        # meantime, return a dummy:
+        return pexpect.spawn("true", ["true"],
+                             logfile=sys.stdout,
+                             encoding=ENCODING,
+                             timeout=5)
+
     print("Running: %s" % cmd_as_shell(cmd))
+
     first = cmd[0]
     rest = cmd[1:]
     child = pexpect.spawn(first, rest, logfile=sys.stdout, encoding=ENCODING, timeout=5)
-    delaybeforesend = 0
     pexpect_autoclose(child)
     # give time for parameters to properly setup
     time.sleep(3)
@@ -234,7 +323,7 @@ def start_SITL(binary, valgrind=False, gdb=False, wipe=False, synthetic_clock=Tr
 
 
 def start_MAVProxy_SITL(atype, aircraft=None, setup=False, master='tcp:127.0.0.1:5760',
-                        options=None, logfile=sys.stdout):
+                        options=[], logfile=sys.stdout):
     """Launch mavproxy connected to a SITL instance."""
     import pexpect
     global close_list
@@ -245,8 +334,7 @@ def start_MAVProxy_SITL(atype, aircraft=None, setup=False, master='tcp:127.0.0.1
     if aircraft is None:
         aircraft = 'test.%s' % atype
     cmd += ' --aircraft=%s' % aircraft
-    if options is not None:
-        cmd += ' ' + options
+    cmd += ' ' + ' '.join(options)
     ret = pexpect.spawn(cmd, logfile=logfile, encoding=ENCODING, timeout=60)
     ret.delaybeforesend = 0
     pexpect_autoclose(ret)
@@ -367,8 +455,6 @@ def BodyRatesToEarthRates(dcm, gyro):
     psiDot   = (q * sin(phi) + r * cos(phi)) / cos(theta)
     return Vector3(phiDot, thetaDot, psiDot)
 
-radius_of_earth = 6378100.0  # in meters
-
 
 def gps_newpos(lat, lon, bearing, distance):
     """Extrapolate latitude/longitude given a heading and distance
@@ -379,7 +465,7 @@ def gps_newpos(lat, lon, bearing, distance):
     lat1 = radians(lat)
     lon1 = radians(lon)
     brng = radians(bearing)
-    dr = distance / radius_of_earth
+    dr = distance / RADIUS_OF_EARTH
 
     lat2 = asin(sin(lat1) * cos(dr) +
                 cos(lat1) * sin(dr) * cos(brng))
@@ -401,7 +487,7 @@ def gps_distance(lat1, lon1, lat2, lon2):
 
     a = math.sin(0.5 * dLat)**2 + math.sin(0.5 * dLon)**2 * math.cos(lat1) * math.cos(lat2)
     c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
-    return radius_of_earth * c
+    return RADIUS_OF_EARTH * c
 
 
 def gps_bearing(lat1, lon1, lat2, lon2):
@@ -460,7 +546,7 @@ class Wind(object):
         return (speed, self.direction)
 
     # Calculate drag.
-    def drag(self, velocity, deltat=None, testing=None):
+    def drag(self, velocity, deltat=None):
         """Return current wind force in Earth frame.  The velocity parameter is
            a Vector3 of the current velocity of the aircraft in earth frame, m/s ."""
         from math import radians
@@ -553,6 +639,7 @@ def constrain(value, minv, maxv):
     if value > maxv:
         value = maxv
     return value
+
 
 if __name__ == "__main__":
     import doctest

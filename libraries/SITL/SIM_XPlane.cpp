@@ -26,7 +26,7 @@
 #include <sys/types.h>
 
 #include <AP_HAL/AP_HAL.h>
-#include <DataFlash/DataFlash.h>
+#include <AP_Logger/AP_Logger.h>
 
 extern const AP_HAL::HAL& hal;
 
@@ -240,11 +240,14 @@ bool XPlane::receive_data(void)
                  * input from XPlane10
                  */
                 bool has_magic = ((uint32_t)(data[1] * throttle_magic_scale) % 1000U) == (uint32_t)(throttle_magic * throttle_magic_scale);
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wfloat-equal"
                 if (data[1] < 0 ||
                     data[1] == throttle_sent ||
                     has_magic) {
                     break;
                 }
+#pragma GCC diagnostic pop
                 rcin[2] = data[1];
             }
             break;
@@ -336,26 +339,13 @@ failed:
     }
 
     // advance time by 1ms
-    Vector3f rot_accel;
     frame_time_us = 1000;
     float delta_time = frame_time_us * 1e-6f;
 
     time_now_us += frame_time_us;
 
-    // extrapolate sensors
-    dcm.rotate(gyro * delta_time);
-    dcm.normalize();
-
-    // work out acceleration as seen by the accelerometers. It sees the kinematic
-    // acceleration (ie. real movement), plus gravity
-    accel_body = dcm.transposed() * (accel_earth + Vector3f(0,0,-GRAVITY_MSS));
-
-    // new velocity and position vectors
-    velocity_ef += accel_earth * delta_time;
-    position += velocity_ef * delta_time;
-    velocity_air_ef = velocity_ef + wind_ef;
-    velocity_air_bf = dcm.transposed() * velocity_air_ef;
-
+    extrapolate_sensors(delta_time);
+    
     update_position();
     time_advance();
     update_mag_field_bf();
@@ -400,7 +390,7 @@ void XPlane::send_data(const struct sitl_input &input)
     if (SRV_Channels::find_channel(SRV_Channel::k_flap, flap_chan) ||
         SRV_Channels::find_channel(SRV_Channel::k_flap_auto, flap_chan)) {
         float flap = (input.servos[flap_chan]-1000)/1000.0;
-        if (flap != last_flap) {
+        if (!is_equal(flap, last_flap)) {
             send_dref("sim/flightmodel/controls/flaprqst", flap);
             send_dref("sim/aircraft/overflow/acf_flap_arm", flap>0?1:0);
         }

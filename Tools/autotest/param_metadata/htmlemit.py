@@ -47,7 +47,7 @@ DO NOT EDIT
     def start_libraries(self):
         pass
 
-    def emit(self, g, f):
+    def emit(self, g):
         tag = '%s Parameters' % g.name
         t = '\n\n<h1>%s</h1>\n' % tag
 
@@ -69,6 +69,8 @@ DO NOT EDIT
                         t += "<table><th>Value</th><th>Meaning</th>\n"
                         for value in values:
                             v = value.split(':')
+                            if len(v) != 2:
+                                raise ValueError("Bad value (%s)" % v)
                             t += "<tr><td>%s</td><td>%s</td></tr>\n" % (v[0], v[1])
                         t += "</table>\n"
                     elif field == 'Units':

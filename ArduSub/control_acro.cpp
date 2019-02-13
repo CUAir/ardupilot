@@ -11,6 +11,10 @@ bool Sub::acro_init()
     // set target altitude to zero for reporting
     pos_control.set_alt_target(0);
 
+    // attitude hold inputs become thrust inputs in acro mode
+    // set to neutral to prevent chaotic behavior (esp. roll/pitch)
+    set_neutral_controls();
+
     return true;
 }
 
@@ -22,7 +26,7 @@ void Sub::acro_run()
 
     // if not armed set throttle to zero and exit immediately
     if (!motors.armed()) {
-        motors.set_desired_spool_state(AP_Motors::DESIRED_SPIN_WHEN_ARMED);
+        motors.set_desired_spool_state(AP_Motors::DESIRED_GROUND_IDLE);
         attitude_control.set_throttle_out_unstabilized(0,true,g.throttle_filt);
         return;
     }

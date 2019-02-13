@@ -1,27 +1,5 @@
 #include "Copter.h"
 
-// set_home_state - update home state
-void Copter::set_home_state(enum HomeState new_home_state)
-{
-    // if no change, exit immediately
-    if (ap.home_state == new_home_state)
-        return;
-
-    // update state
-    ap.home_state = new_home_state;
-
-    // log if home has been set
-    if (new_home_state == HOME_SET_NOT_LOCKED || new_home_state == HOME_SET_AND_LOCKED) {
-        Log_Write_Event(DATA_SET_HOME);
-    }
-}
-
-// home_is_set - returns true if home positions has been set (to GPS location, armed location or EKF origin)
-bool Copter::home_is_set()
-{
-    return (ap.home_state == HOME_SET_NOT_LOCKED || ap.home_state == HOME_SET_AND_LOCKED);
-}
-
 // ---------------------------------------------
 void Copter::set_auto_armed(bool b)
 {
@@ -93,13 +71,6 @@ void Copter::set_failsafe_radio(bool b)
 
 
 // ---------------------------------------------
-void Copter::set_failsafe_battery(bool b)
-{
-    failsafe.battery = b;
-    AP_Notify::flags.failsafe_battery = b;
-}
-
-// ---------------------------------------------
 void Copter::set_failsafe_gcs(bool b)
 {
     failsafe.gcs = b;
@@ -115,7 +86,7 @@ void Copter::update_using_interlock()
 #else
     // check if we are using motor interlock control on an aux switch or are in throw mode
     // which uses the interlock to stop motors while the copter is being thrown
-    ap.using_interlock = check_if_auxsw_mode_used(AUXSW_MOTOR_INTERLOCK);
+    ap.using_interlock = rc().find_channel_for_option(RC_Channel::aux_func::MOTOR_INTERLOCK) != nullptr;
 #endif
 }
 

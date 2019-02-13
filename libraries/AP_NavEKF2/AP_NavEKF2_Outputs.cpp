@@ -101,8 +101,8 @@ bool NavEKF2_core::getRangeBeaconDebug(uint8_t &ID, float &rng, float &innov, fl
 // this is needed to ensure the vehicle does not fly too high when using optical flow navigation
 bool NavEKF2_core::getHeightControlLimit(float &height) const
 {
-    // only ask for limiting if we are doing optical flow navigation
-    if (frontend->_fusionModeGPS == 3) {
+    // only ask for limiting if we are doing optical flow only navigation
+    if (frontend->_fusionModeGPS == 3 && (PV_AidingMode == AID_RELATIVE) && flowDataValid) {
         // If are doing optical flow nav, ensure the height above ground is within range finder limits after accounting for vehicle tilt and control errors
         height = MAX(float(frontend->_rng.max_distance_cm_orient(ROTATION_PITCH_270)) * 0.007f - 1.0f, 1.0f);
         // If we are are not using the range finder as the height reference, then compensate for the difference between terrain and EKF origin
@@ -251,9 +251,9 @@ bool NavEKF2_core::getPosNE(Vector2f &posNE) const
     } else {
         // In constant position mode the EKF position states are at the origin, so we cannot use them as a position estimate
         if(validOrigin) {
-            if ((_ahrs->get_gps().status() >= AP_GPS::GPS_OK_FIX_2D)) {
+            if ((AP::gps().status() >= AP_GPS::GPS_OK_FIX_2D)) {
                 // If the origin has been set and we have GPS, then return the GPS position relative to the origin
-                const struct Location &gpsloc = _ahrs->get_gps().location();
+                const struct Location &gpsloc = AP::gps().location();
                 Vector2f tempPosNE = location_diff(EKF_origin, gpsloc);
                 posNE.x = tempPosNE.x;
                 posNE.y = tempPosNE.y;
@@ -315,11 +315,15 @@ bool NavEKF2_core::getHAGL(float &HAGL) const
 // The getFilterStatus() function provides a more detailed description of data health and must be checked if data is to be used for flight control
 bool NavEKF2_core::getLLH(struct Location &loc) const
 {
-    if(validOrigin) {
+    const AP_GPS &gps = AP::gps();
+    Location origin;
+    float posD;
+
+    if(getPosD(posD) && getOriginLLH(origin)) {
         // Altitude returned is an absolute altitude relative to the WGS-84 spherioid
-        loc.alt =  100 * (int32_t)(ekfGpsRefHgt - (double)outputDataNew.position.z);
-        loc.flags.relative_alt = 0;
-        loc.flags.terrain_alt = 0;
+        loc.alt =  origin.alt - posD*100;
+        loc.relative_alt = 0;
+        loc.terrain_alt = 0;
 
         // there are three modes of operation, absolute position (GPS fusion), relative position (optical flow fusion) and constant position (no aiding)
         if (filterStatus.flags.horiz_pos_abs || filterStatus.flags.horiz_pos_rel) {
@@ -331,9 +335,9 @@ bool NavEKF2_core::getLLH(struct Location &loc) const
         } else {
             // we could be in constant position mode  because the vehicle has taken off without GPS, or has lost GPS
             // in this mode we cannot use the EKF states to estimate position so will return the best available data
-            if ((_ahrs->get_gps().status() >= AP_GPS::GPS_OK_FIX_2D)) {
+            if ((gps.status() >= AP_GPS::GPS_OK_FIX_2D)) {
                 // we have a GPS position fix to return
-                const struct Location &gpsloc = _ahrs->get_gps().location();
+                const struct Location &gpsloc = gps.location();
                 loc.lat = gpsloc.lat;
                 loc.lng = gpsloc.lng;
                 return true;
@@ -347,11 +351,11 @@ bool NavEKF2_core::getLLH(struct Location &loc) const
     } else {
         // If no origin has been defined for the EKF, then we cannot use its position states so return a raw
         // GPS reading if available and return false
-        if ((_ahrs->get_gps().status() >= AP_GPS::GPS_OK_FIX_3D)) {
-            const struct Location &gpsloc = _ahrs->get_gps().location();
+        if ((gps.status() >= AP_GPS::GPS_OK_FIX_3D)) {
+            const struct Location &gpsloc = gps.location();
             loc = gpsloc;
-            loc.flags.relative_alt = 0;
-            loc.flags.terrain_alt = 0;
+            loc.relative_alt = 0;
+            loc.terrain_alt = 0;
         }
         return false;
     }
@@ -403,6 +407,10 @@ void NavEKF2_core::getMagXYZ(Vector3f &magXYZ) const
 // return true if offsets are valid
 bool NavEKF2_core::getMagOffsets(uint8_t mag_idx, Vector3f &magOffsets) const
 {
+    if (!_ahrs->get_compass()) {
+        return false;
+    }
+
     // compass offsets are valid if we have finalised magnetic field initialisation, magnetic field learning is not prohibited,
     // primary compass is valid and state variances have converged
     const float maxMagVar = 5E-6f;
@@ -575,15 +583,14 @@ void NavEKF2_core::send_status_report(mavlink_channel_t chan)
     // height estimation or optical flow operation. This prevents false alarms at the GCS if a
     // range finder is fitted for other applications
     float temp;
-    if ((frontend->_useRngSwHgt > 0) || PV_AidingMode == AID_RELATIVE || flowDataValid) {
+    if (((frontend->_useRngSwHgt > 0) && activeHgtSource == HGT_SOURCE_RNG) || (PV_AidingMode == AID_RELATIVE && flowDataValid)) {
         temp = sqrtf(auxRngTestRatio);
     } else {
         temp = 0.0f;
     }
 
     // send message
-    mavlink_msg_ekf_status_report_send(chan, flags, velVar, posVar, hgtVar, magVar.length(), temp);
-
+    mavlink_msg_ekf_status_report_send(chan, flags, velVar, posVar, hgtVar, magVar.length(), temp, tasVar);
 }
 
 // report the reason for why the backend is refusing to initialise

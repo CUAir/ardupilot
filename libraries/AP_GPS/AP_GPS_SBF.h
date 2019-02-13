@@ -32,19 +32,24 @@ class AP_GPS_SBF : public AP_GPS_Backend
 public:
     AP_GPS_SBF(AP_GPS &_gps, AP_GPS::GPS_State &_state, AP_HAL::UARTDriver *_port);
 
-    AP_GPS::GPS_Status highest_supported_status(void) { return AP_GPS::GPS_OK_FIX_3D_RTK_FIXED; }
+    AP_GPS::GPS_Status highest_supported_status(void) override { return AP_GPS::GPS_OK_FIX_3D_RTK_FIXED; }
 
     // Methods
-    bool read();
+    bool read() override;
 
     const char *name() const override { return "SBF"; }
 
-    bool is_configured (void) override { return (!gps._raw_data || (RxState & SBF_DISK_ACTIVITY)); }
+    bool is_configured (void) override;
 
     void broadcast_configuration_failure_reason(void) const override;
 
     // get the velocity lag, returns true if the driver is confident in the returned value
     bool get_lag(float &lag_sec) const override { lag_sec = 0.08f; return true; } ;
+
+    bool is_healthy(void) const override;
+
+    bool prepare_for_arming(void) override;
+
 
 private:
 
@@ -60,13 +65,19 @@ private:
     "sso, Stream1, COM1, PVTGeodetic+DOP+ExtEventPVTGeodetic+ReceiverStatus+VelCovGeodetic, msec100\n",
     "srd, Moderate, UAV\n",
     "sem, PVT, 5\n",
-    "spm, Rover, StandAlone+SBAS+DGPS+RTK\n",
-    "sso, Stream2, Dsk1, postprocess+event, msec100\n"};
+    "spm, Rover, all\n",
+    "sso, Stream2, Dsk1, postprocess+event+comment, msec100\n"};
+    uint32_t _config_last_ack_time;
+
+    const char* _port_enable = "\nSSSSSSSSSS\n";
    
     uint32_t crc_error_counter = 0;
-    uint32_t last_injected_data_ms = 0;
-    bool validcommand = false;
     uint32_t RxState;
+    uint32_t RxError;
+
+    void mount_disk(void) const;
+    void unmount_disk(void) const;
+    bool _has_been_armed;
 
     enum sbf_ids {
         DOP = 4001,
@@ -159,7 +170,7 @@ private:
         msg4001 msg4001u;
         msg4014 msg4014u;
         msg5908 msg5908u;
-        uint8_t bytes[128];
+        uint8_t bytes[256];
     };
 
     struct sbf_msg_parser_t
@@ -174,7 +185,8 @@ private:
             BLOCKID2,
             LENGTH1,
             LENGTH2,
-            DATA
+            DATA,
+            COMMAND_LINE // used to parse command responses
         } sbf_state;
         uint16_t preamble;
         uint16_t crc;
@@ -185,4 +197,14 @@ private:
     } sbf_msg;
 
     void log_ExtEventPVTGeodetic(const msg4007 &temp);
+
+    enum {
+        SOFTWARE      = (1 << 3),   // set upon detection of a software warning or  error. This bit is reset by the command  “lif, error”
+        WATCHDOG      = (1 << 4),   // set when the watch-dog expired at least once since the last power-on.
+        CONGESTION    = (1 << 6),   // set when an output data congestion has been detected on at least one of the communication ports of the receiver during the last second.
+        MISSEDEVENT   = (1 << 8),   // set when an external event congestion has been detected during the last second. It indicates that the receiver is receiving too many events on its EVENTx pins.
+        CPUOVERLOAD   = (1 << 9),   // set when the CPU load is larger than 90%. If this bit is set, receiver operation may be unreliable and the user must decrease the processing load by following the recommendations in the User Manual.
+        INVALIDCONFIG = (1 << 10),  // set if one or more configuration file (permission or channel configuration) is invalid or absent.
+        OUTOFGEOFENCE = (1 << 11),  // set if the receiver is currently out of its permitted region of operation (geo-fencing).
+    };
 };

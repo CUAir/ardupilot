@@ -34,8 +34,8 @@ void Copter::ekf_check()
         return;
     }
 
-    // return immediately if motors are not armed, ekf check is disabled, not using ekf or usb is connected
-    if (!motors->armed() || ap.usb_connected || (g.fs_ekf_thresh <= 0.0f)) {
+    // return immediately if motors are not armed, or ekf check is disabled
+    if (!motors->armed() || (g.fs_ekf_thresh <= 0.0f)) {
         ekf_check_state.fail_count = 0;
         ekf_check_state.bad_variance = false;
         AP_Notify::flags.ekf_bad = ekf_check_state.bad_variance;
@@ -94,11 +94,6 @@ bool Copter::ekf_over_threshold()
         return false;
     }
 
-    // return true immediately if position is bad
-    if (!ekf_position_ok() && !optflow_position_ok()) {
-        return true;
-    }
-
     // use EKF to get variance
     float position_variance, vel_variance, height_variance, tas_variance;
     Vector3f mag_variance;
@@ -117,7 +112,15 @@ bool Copter::ekf_over_threshold()
         over_thresh_count++;
     }
 
-    return (over_thresh_count >= 2);
+    if (over_thresh_count >= 2) {
+        return true;
+    }
+
+    // either optflow relative or absolute position estimate OK
+    if (optflow_position_ok() || ekf_position_ok()) {
+        return false;
+    }
+    return true;
 }
 
 
@@ -129,19 +132,20 @@ void Copter::failsafe_ekf_event()
         return;
     }
 
-    // do nothing if motors disarmed
-    if (!motors->armed()) {
-        return;
-    }
-
-    // do nothing if not in GPS flight mode and ekf-action is not land-even-stabilize
-    if ((control_mode != LAND) && !mode_requires_GPS(control_mode) && (g.fs_ekf_action != FS_EKF_ACTION_LAND_EVEN_STABILIZE)) {
-        return;
-    }
-
     // EKF failsafe event has occurred
     failsafe.ekf = true;
     Log_Write_Error(ERROR_SUBSYSTEM_FAILSAFE_EKFINAV, ERROR_CODE_FAILSAFE_OCCURRED);
+
+    // sometimes LAND *does* require GPS so ensure we are in non-GPS land
+    if (control_mode == LAND && landing_with_GPS()) {
+        mode_land.do_not_use_GPS();
+        return;
+    }
+
+    // does this mode require position?
+    if (!copter.flightmode->requires_GPS() && (g.fs_ekf_action != FS_EKF_ACTION_LAND_EVEN_STABILIZE)) {
+        return;
+    }
 
     // take action based on fs_ekf_action parameter
     switch (g.fs_ekf_action) {
@@ -151,14 +155,11 @@ void Copter::failsafe_ekf_event()
                 set_mode_land_with_pause(MODE_REASON_EKF_FAILSAFE);
             }
             break;
+        case FS_EKF_ACTION_LAND:
+        case FS_EKF_ACTION_LAND_EVEN_STABILIZE:
         default:
             set_mode_land_with_pause(MODE_REASON_EKF_FAILSAFE);
             break;
-    }
-
-    // if flight mode is already LAND ensure it's not the GPS controlled LAND
-    if (control_mode == LAND) {
-        land_do_not_use_GPS();
     }
 }
 
@@ -179,10 +180,10 @@ void Copter::failsafe_ekf_off_event(void)
 void Copter::check_ekf_reset()
 {
     // check for yaw reset
-    float yaw_angle_change_rad = 0.0f;
+    float yaw_angle_change_rad;
     uint32_t new_ekfYawReset_ms = ahrs.getLastYawResetAngle(yaw_angle_change_rad);
     if (new_ekfYawReset_ms != ekfYawReset_ms) {
-        attitude_control->shift_ef_yaw_target(ToDeg(yaw_angle_change_rad) * 100.0f);
+        attitude_control->inertial_frame_reset();
         ekfYawReset_ms = new_ekfYawReset_ms;
         Log_Write_Event(DATA_EKF_YAW_RESET);
     }
@@ -190,9 +191,10 @@ void Copter::check_ekf_reset()
 #if AP_AHRS_NAVEKF_AVAILABLE
     // check for change in primary EKF (log only, AC_WPNav handles position target adjustment)
     if ((EKF2.getPrimaryCoreIndex() != ekf_primary_core) && (EKF2.getPrimaryCoreIndex() != -1)) {
+        attitude_control->inertial_frame_reset();
         ekf_primary_core = EKF2.getPrimaryCoreIndex();
         Log_Write_Error(ERROR_SUBSYSTEM_EKF_PRIMARY, ekf_primary_core);
-        gcs().send_text(MAV_SEVERITY_WARNING, "EKF primary changed:%d\n", (unsigned)ekf_primary_core);
+        gcs().send_text(MAV_SEVERITY_WARNING, "EKF primary changed:%d", (unsigned)ekf_primary_core);
     }
 #endif
 }

@@ -7,6 +7,7 @@
 #include <AP_AHRS/AP_AHRS.h>
 #include <AP_Vehicle/AP_Vehicle.h>
 #include <GCS_MAVLink/GCS.h>
+#include <AP_RangeFinder/RangeFinder_Backend.h>
 
 extern const AP_HAL::HAL& hal;
 
@@ -176,7 +177,7 @@ void NavEKF3_core::ResetHeight(void)
 
     // Reset the vertical velocity state using GPS vertical velocity if we are airborne
     // Check that GPS vertical velocity data is available and can be used
-    if (inFlight && !gpsNotAvailable && frontend->_fusionModeGPS == 0) {
+    if (inFlight && !gpsNotAvailable && frontend->_fusionModeGPS == 0 && !frontend->inhibitGpsVertVelUse) {
         stateStruct.velocity.z =  gpsDataNew.vel.z;
     } else if (onGround) {
         stateStruct.velocity.z = 0.0f;
@@ -207,7 +208,7 @@ bool NavEKF3_core::resetHeightDatum(void)
     // record the old height estimate
     float oldHgt = -stateStruct.position.z;
     // reset the barometer so that it reads zero at the current height
-    frontend->_baro.update_calibration();
+    AP::baro().update_calibration();
     // reset the height state
     stateStruct.position.z = 0.0f;
     // adjust the height of the EKF origin so that the origin plus baro height before and after the reset is the same
@@ -241,7 +242,7 @@ void NavEKF3_core::SelectVelPosFusion()
     // Determine if we need to fuse position and velocity data on this time step
     if (gpsDataToFuse && PV_AidingMode == AID_ABSOLUTE) {
         // correct GPS data for position offset of antenna phase centre relative to the IMU
-        Vector3f posOffsetBody = _ahrs->get_gps().get_antenna_offset(gpsDataDelayed.sensor_idx) - accelPosOffset;
+        Vector3f posOffsetBody = AP::gps().get_antenna_offset(gpsDataDelayed.sensor_idx) - accelPosOffset;
         if (!posOffsetBody.is_zero()) {
             if (fuseVelData) {
                 // TODO use a filtered angular rate with a group delay that matches the GPS delay
@@ -499,7 +500,7 @@ void NavEKF3_core::FuseVelPosNED()
             // test velocity measurements
             uint8_t imax = 2;
             // Don't fuse vertical velocity observations if inhibited by the user or if we are using synthetic data
-            if (frontend->_fusionModeGPS >= 1 || PV_AidingMode != AID_ABSOLUTE) {
+            if (frontend->_fusionModeGPS > 0 || PV_AidingMode != AID_ABSOLUTE || frontend->inhibitGpsVertVelUse) {
                 imax = 1;
             }
             float innovVelSumSq = 0; // sum of squares of velocity innovations
@@ -753,10 +754,13 @@ void NavEKF3_core::selectHeightForFusion()
     // the corrected reading is the reading that would have been taken if the sensor was
     // co-located with the IMU
     if (rangeDataToFuse) {
-        Vector3f posOffsetBody = frontend->_rng.get_pos_offset(rangeDataDelayed.sensor_idx) - accelPosOffset;
-        if (!posOffsetBody.is_zero()) {
-            Vector3f posOffsetEarth = prevTnb.mul_transpose(posOffsetBody);
-            rangeDataDelayed.rng += posOffsetEarth.z / prevTnb.c.z;
+        AP_RangeFinder_Backend *sensor = frontend->_rng.get_backend(rangeDataDelayed.sensor_idx);
+        if (sensor != nullptr) {
+            Vector3f posOffsetBody = sensor->get_pos_offset() - accelPosOffset;
+            if (!posOffsetBody.is_zero()) {
+                Vector3f posOffsetEarth = prevTnb.mul_transpose(posOffsetBody);
+                rangeDataDelayed.rng += posOffsetEarth.z / prevTnb.c.z;
+            }
         }
     }
 
@@ -958,7 +962,7 @@ void NavEKF3_core::FuseBodyVel()
             }
 
             // calculate intermediate expressions for X axis Kalman gains
-            float R_VEL = bodyOdmDataDelayed.velErr;
+            float R_VEL = sq(bodyOdmDataDelayed.velErr);
             float t2 = q0*q3*2.0f;
             float t3 = q1*q2*2.0f;
             float t4 = t2+t3;
@@ -1130,7 +1134,7 @@ void NavEKF3_core::FuseBodyVel()
             }
 
             // calculate intermediate expressions for Y axis Kalman gains
-            float R_VEL = bodyOdmDataDelayed.velErr;
+            float R_VEL = sq(bodyOdmDataDelayed.velErr);
             float t2 = q0*q3*2.0f;
             float t9 = q1*q2*2.0f;
             float t3 = t2-t9;
@@ -1302,7 +1306,7 @@ void NavEKF3_core::FuseBodyVel()
             }
 
             // calculate intermediate expressions for Z axis Kalman gains
-            float R_VEL = bodyOdmDataDelayed.velErr;
+            float R_VEL = sq(bodyOdmDataDelayed.velErr);
             float t2 = q0*q2*2.0f;
             float t3 = q1*q3*2.0f;
             float t4 = t2+t3;
@@ -1564,11 +1568,44 @@ void NavEKF3_core::SelectBodyOdomFusion()
         // start performance timer
         hal.util->perf_begin(_perf_FuseBodyOdom);
 
+        usingWheelSensors = false;
+
         // Fuse data into the main filter
         FuseBodyVel();
 
         // stop the performance timer
         hal.util->perf_end(_perf_FuseBodyOdom);
+
+    } else if (storedWheelOdm.recall(wheelOdmDataDelayed, imuDataDelayed.time_ms)) {
+
+        // check if the delta time is too small to calculate a velocity
+        if (wheelOdmDataDelayed.delTime > EKF_TARGET_DT) {
+
+            // get the forward velocity
+            float fwdSpd = wheelOdmDataDelayed.delAng * wheelOdmDataDelayed.radius * (1.0f / wheelOdmDataDelayed.delTime);
+
+            // get the unit vector from the projection of the X axis onto the horizontal
+            Vector3f unitVec;
+            unitVec.x = prevTnb.a.x;
+            unitVec.y = prevTnb.a.y;
+            unitVec.z = 0.0f;
+            unitVec.normalize();
+
+            // multiply by forward speed to get velocity vector measured by wheel encoders
+            Vector3f velNED = unitVec * fwdSpd;
+
+            // This is a hack to enable use of the existing body frame velocity fusion method
+            // TODO write a dedicated observation model for wheel encoders
+            usingWheelSensors = true;
+            bodyOdmDataDelayed.vel = prevTnb * velNED;
+            bodyOdmDataDelayed.body_offset = wheelOdmDataDelayed.hub_offset;
+            bodyOdmDataDelayed.velErr = frontend->_wencOdmVelErr;
+
+            // Fuse data into the main filter
+            FuseBodyVel();
+
+        }
+
     }
 }
 

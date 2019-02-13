@@ -48,7 +48,7 @@ void AP_Mount_Alexmos::update()
 
         // point mount to a GPS point given by the mission planner
         case MAV_MOUNT_MODE_GPS_POINT:
-            if(_frontend._ahrs.get_gps().status() >= AP_GPS::GPS_OK_FIX_2D) {
+            if(AP::gps().status() >= AP_GPS::GPS_OK_FIX_2D) {
                 calc_angle_to_location(_state._roi_target, _angle_ef_target_rad, true, false);
                 control_axis(_angle_ef_target_rad, false);
             }
@@ -73,8 +73,8 @@ void AP_Mount_Alexmos::set_mode(enum MAV_MOUNT_MODE mode)
     _state._mode = mode;
 }
 
-// status_msg - called to allow mounts to send their status to GCS using the MOUNT_STATUS message
-void AP_Mount_Alexmos::status_msg(mavlink_channel_t chan)
+// send_mount_status - called to allow mounts to send their status to GCS using the MOUNT_STATUS message
+void AP_Mount_Alexmos::send_mount_status(mavlink_channel_t chan)
 {
     if (!_initialised) {
         return;

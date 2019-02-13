@@ -7,7 +7,7 @@
 #include <AP_Param/AP_Param.h>
 #include <stdlib.h>
 #include <cmath>
-#include <DataFlash/DataFlash.h>
+#include <AP_Logger/AP_Logger.h>
 
 #define AC_PID_FILT_HZ_DEFAULT  20.0f   // default input filter frequency
 #define AC_PID_FILT_HZ_MIN      0.01f   // minimum input filter frequency
@@ -18,7 +18,7 @@ class AC_PID {
 public:
 
     // Constructor for PID
-    AC_PID(float initial_p, float initial_i, float initial_d, float initial_imax, float initial_filt_hz, float dt);
+    AC_PID(float initial_p, float initial_i, float initial_d, float initial_imax, float initial_filt_hz, float dt, float initial_ff = 0);
 
     // set_dt - set time step in seconds
     void        set_dt(float dt);
@@ -45,7 +45,7 @@ public:
     void        reset_I();
 
     // reset_filter - input filter will be reset to the next value provided to set_input()
-    void        reset_filter();
+    void        reset_filter() { _flags._reset_filter = true; }
 
     // load gain from eeprom
     void        load_gains();
@@ -54,7 +54,7 @@ public:
     void        save_gains();
 
     /// operator function call for easy initialisation
-    void operator() (float p, float i, float d, float imaxval, float input_filt_hz, float dt );
+    void operator() (float p, float i, float d, float imaxval, float input_filt_hz, float dt, float ffval = 0);
 
     // get accessors
     AP_Float   &kP() { return _kp; }
@@ -76,10 +76,11 @@ public:
     float       get_integrator() const { return _integrator; }
     void        set_integrator(float i) { _integrator = i; }
 
-    // set the designed rate (for logging purposes)
+    // set the desired and actual rates (for logging purposes)
     void        set_desired_rate(float desired) { _pid_info.desired = desired; }
+    void        set_actual_rate(float actual) { _pid_info.actual = actual; }
 
-    const       DataFlash_Class::PID_Info& get_pid_info(void) const { return _pid_info; }
+    const       AP_Logger::PID_Info& get_pid_info(void) const { return _pid_info; }
 
     // parameter var table
     static const struct AP_Param::GroupInfo        var_info[];
@@ -105,5 +106,5 @@ protected:
     float           _input;                 // last input for derivative
     float           _derivative;            // last derivative for low-pass filter
 
-    DataFlash_Class::PID_Info        _pid_info;
+    AP_Logger::PID_Info        _pid_info;
 };

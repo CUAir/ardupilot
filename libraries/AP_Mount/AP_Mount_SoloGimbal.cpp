@@ -4,7 +4,7 @@
 
 #include "AP_Mount_SoloGimbal.h"
 #include "SoloGimbal.h"
-#include <DataFlash/DataFlash.h>
+#include <AP_Logger/AP_Logger.h>
 #include <GCS_MAVLink/GCS_MAVLink.h>
 #include <GCS_MAVLink/GCS.h>
 
@@ -12,8 +12,7 @@ extern const AP_HAL::HAL& hal;
 
 AP_Mount_SoloGimbal::AP_Mount_SoloGimbal(AP_Mount &frontend, AP_Mount::mount_state &state, uint8_t instance) :
     AP_Mount_Backend(frontend, state, instance),
-    _initialised(false),
-    _gimbal(frontend._ahrs)
+    _gimbal()
 {}
 
 // init - performs any required initialisation for this instance
@@ -70,7 +69,7 @@ void AP_Mount_SoloGimbal::update()
         // point mount to a GPS point given by the mission planner
         case MAV_MOUNT_MODE_GPS_POINT:
             _gimbal.set_lockedToBody(false);
-            if(_frontend._ahrs.get_gps().status() >= AP_GPS::GPS_OK_FIX_2D) {
+            if(AP::gps().status() >= AP_GPS::GPS_OK_FIX_2D) {
                 calc_angle_to_location(_state._roi_target, _angle_ef_target_rad, true, true);
             }
             break;
@@ -100,8 +99,8 @@ void AP_Mount_SoloGimbal::set_mode(enum MAV_MOUNT_MODE mode)
     _state._mode = mode;
 }
 
-// status_msg - called to allow mounts to send their status to GCS using the MOUNT_STATUS message
-void AP_Mount_SoloGimbal::status_msg(mavlink_channel_t chan)
+// send_mount_status - called to allow mounts to send their status to GCS using the MOUNT_STATUS message
+void AP_Mount_SoloGimbal::send_mount_status(mavlink_channel_t chan)
 {
     if (_gimbal.aligned()) {
         mavlink_msg_mount_status_send(chan, 0, 0, degrees(_angle_ef_target_rad.y)*100, degrees(_angle_ef_target_rad.x)*100, degrees(_angle_ef_target_rad.z)*100);
@@ -114,30 +113,35 @@ void AP_Mount_SoloGimbal::status_msg(mavlink_channel_t chan)
 /*
   handle a GIMBAL_REPORT message
  */
-void AP_Mount_SoloGimbal::handle_gimbal_report(mavlink_channel_t chan, mavlink_message_t *msg)
+void AP_Mount_SoloGimbal::handle_gimbal_report(mavlink_channel_t chan, const mavlink_message_t *msg)
 {
     _gimbal.update_target(_angle_ef_target_rad);
     _gimbal.receive_feedback(chan,msg);
 
-    if(!_params_saved && _frontend._dataflash != nullptr && _frontend._dataflash->logging_started()) {
+    AP_Logger *df = AP_Logger::get_singleton();
+    if (df == nullptr) {
+        return;
+    }
+
+    if(!_params_saved && df->logging_started()) {
         _gimbal.fetch_params();       //last parameter save might not be stored in dataflash so retry
         _params_saved = true;
     }
 
     if (_gimbal.get_log_dt() > 1.0f/25.0f) {
-        _gimbal.write_logs(_frontend._dataflash);
+        _gimbal.write_logs();
     }
 }
 
-void AP_Mount_SoloGimbal::handle_param_value(mavlink_message_t *msg)
+void AP_Mount_SoloGimbal::handle_param_value(const mavlink_message_t *msg)
 {
-    _gimbal.handle_param_value(_frontend._dataflash, msg);
+    _gimbal.handle_param_value(msg);
 }
 
 /*
   handle a GIMBAL_REPORT message
  */
-void AP_Mount_SoloGimbal::handle_gimbal_torque_report(mavlink_channel_t chan, mavlink_message_t *msg)
+void AP_Mount_SoloGimbal::handle_gimbal_torque_report(mavlink_channel_t chan, const mavlink_message_t *msg)
 {
     _gimbal.disable_torque_report();
 }

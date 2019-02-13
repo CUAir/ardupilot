@@ -16,9 +16,9 @@
 
 #include <AP_Common/AP_Common.h>
 #include <AP_HAL/AP_HAL.h>
-#include <DataFlash/DataFlash.h>
+#include <AP_Logger/AP_Logger.h>
 
-#if HAL_OS_POSIX_IO && defined(HAL_BOARD_TERRAIN_DIRECTORY)
+#if (HAL_OS_POSIX_IO || HAL_OS_FATFS_IO) && defined(HAL_BOARD_TERRAIN_DIRECTORY)
 #define AP_TERRAIN_AVAILABLE 1
 #else
 #define AP_TERRAIN_AVAILABLE 0
@@ -29,7 +29,6 @@
 #include <AP_Param/AP_Param.h>
 #include <AP_AHRS/AP_AHRS.h>
 #include <AP_Mission/AP_Mission.h>
-#include <AP_Rally/AP_Rally.h>
 
 #define TERRAIN_DEBUG 0
 
@@ -74,10 +73,13 @@
   file:        first entries increase east, then north
  */
 
-class AP_Terrain
-{
+class AP_Terrain {
 public:
-    AP_Terrain(AP_AHRS &_ahrs, const AP_Mission &_mission, const AP_Rally &_rally);
+    AP_Terrain(const AP_Mission &_mission);
+
+    /* Do not allow copies */
+    AP_Terrain(const AP_Terrain &other) = delete;
+    AP_Terrain &operator=(const AP_Terrain&) = delete;
 
     enum TerrainStatus {
         TerrainStatusDisabled  = 0, // not enabled
@@ -86,7 +88,7 @@ public:
     };
 
     static const struct AP_Param::GroupInfo var_info[];
-    
+
     // update terrain state. Should be called at 1Hz or more
     void update(void);
 
@@ -165,9 +167,9 @@ public:
     float lookahead(float bearing, float distance, float climb_ratio);
 
     /*
-      log terrain status to DataFlash
+      log terrain status to AP_Logger
      */
-    void log_terrain_data(DataFlash_Class &dataflash);
+    void log_terrain_data();
 
     /*
       get some statistics for TERRAIN_REPORT
@@ -333,17 +335,9 @@ private:
     AP_Int8  enable;
     AP_Int16 grid_spacing; // meters between grid points
 
-    // reference to AHRS, so we can ask for our position,
-    // heading and speed
-    AP_AHRS &ahrs;
-
     // reference to AP_Mission, so we can ask preload terrain data for 
     // all waypoints
     const AP_Mission &mission;
-
-    // reference to AP_Rally, so we can ask preload terrain data for 
-    // all rally points
-    const AP_Rally &rally;
 
     // cache of grids in memory, LRU
     uint8_t cache_size = 0;

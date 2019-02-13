@@ -67,13 +67,11 @@ extern const AP_HAL::HAL& hal;
 
 // constructor
 AP_AutoTune::AP_AutoTune(ATGains &_gains, ATType _type,
-                         const AP_Vehicle::FixedWing &parms,
-                         DataFlash_Class &_dataflash) :
+                         const AP_Vehicle::FixedWing &parms) :
     running(false),
     current(_gains),
     type(_type),
     aparm(parms),
-    dataflash(_dataflash),
     saturated_surfaces(false)
 {}
 
@@ -268,19 +266,20 @@ void AP_AutoTune::check_save(void)
  */
 void AP_AutoTune::log_param_change(float v, const char *suffix)
 {
-    if (!dataflash.logging_started()) {
+    AP_Logger *dataflash = AP_Logger::get_singleton();
+    if (!dataflash->logging_started()) {
         return;
     }
     char key[AP_MAX_NAME_SIZE+1];
     if (type == AUTOTUNE_ROLL) {
-        strncpy(key, "RLL2SRV_", 8);
+        strncpy(key, "RLL2SRV_", 9);
         strncpy(&key[8], suffix, AP_MAX_NAME_SIZE-8);
     } else {
-        strncpy(key, "PTCH2SRV_", 9);
+        strncpy(key, "PTCH2SRV_", 10);
         strncpy(&key[9], suffix, AP_MAX_NAME_SIZE-9);
     }
     key[AP_MAX_NAME_SIZE] = 0;
-    dataflash.Log_Write_Parameter(key, v);
+    dataflash->Write_Parameter(key, v);
 }
 
 /*
@@ -328,7 +327,8 @@ void AP_AutoTune::save_gains(const ATGains &v)
 
 void AP_AutoTune::write_log(float servo, float demanded, float achieved)
 {
-    if (!dataflash.logging_started()) {
+    AP_Logger *dataflash = AP_Logger::get_singleton();
+    if (!dataflash->logging_started()) {
         return;
     }
 
@@ -342,5 +342,5 @@ void AP_AutoTune::write_log(float servo, float demanded, float achieved)
         achieved   : achieved,
         P          : current.P.get()
     };
-    dataflash.WriteBlock(&pkt, sizeof(pkt));
+    dataflash->WriteBlock(&pkt, sizeof(pkt));
 }

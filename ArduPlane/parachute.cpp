@@ -18,15 +18,23 @@ void Plane::parachute_check()
 */
 void Plane::parachute_release()
 {
-    if (parachute.released()) {
+    if (parachute.release_in_progress()) {
         return;
     }
-    
     // send message to gcs and dataflash
-    gcs().send_text(MAV_SEVERITY_CRITICAL,"Parachute: Released");
+    if (parachute.released()) {
+        gcs().send_text(MAV_SEVERITY_CRITICAL,"Parachute: Released again");
+    } else {
+        gcs().send_text(MAV_SEVERITY_CRITICAL,"Parachute: Released");
+    }
 
     // release parachute
     parachute.release();
+
+#if LANDING_GEAR_ENABLED == ENABLED
+    // deploy landing gear
+    g2.landing_gear.set_position(AP_LandingGear::LandingGear_Deploy);
+#endif
 }
 
 /*
@@ -51,7 +59,11 @@ bool Plane::parachute_manual_release()
     // if we get this far release parachute
     parachute_release();
 
-    return true;
+#if LANDING_GEAR_ENABLED == ENABLED
+    // deploy landing gear
+    g2.landing_gear.set_position(AP_LandingGear::LandingGear_Deploy);
+#endif
+    return true;    
 }
 
 #endif
